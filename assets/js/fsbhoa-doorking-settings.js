@@ -1,15 +1,47 @@
 jQuery(document).ready(function($) {
-    $('#fsbhoa-save-doorking-settings-button').on('click', function() {
+
+    // --- 1. Toggle Auto vs Manual Rotation UI ---
+    function toggleRotationUI() {
+        var isAuto = $('#fsbhoa_dk_enable_rotation').is(':checked');
+
+        // Toggle Manual vs Auto sections
+        $('#fsbhoa-manual-pin-wrap').closest('tr').toggle(!isAuto);
+        $('#fsbhoa-auto-status-wrap').closest('tr').toggle(isAuto);
+
+        // Toggle Grace Period rows (only relevant when Auto is ON)
+        $('#fsbhoa_dk_grace_before').closest('tr').toggle(isAuto);
+        $('#fsbhoa_dk_grace_after').closest('tr').toggle(isAuto);
+    }
+
+    // Run on initial page load and when the checkbox changes
+    toggleRotationUI();
+    $('#fsbhoa_dk_enable_rotation').on('change', toggleRotationUI);
+
+
+    // --- 2. Save Settings Handler ---
+    $('#fsbhoa-save-doorking-settings-button').on('click', function(e) {
+        e.preventDefault();
         var btn = $(this);
         var feedback = $('#fsbhoa-save-feedback');
-        
+
         // Gather all inputs on the settings page
         var optionsData = [];
-        $('#fsbhoa-doorking-settings-page input[type="text"], #fsbhoa-doorking-settings-page input[type="number"]').each(function() {
-            optionsData.push({
-                name: $(this).attr('name'),
-                value: $(this).val()
-            });
+        $('#fsbhoa-doorking-settings-page input').each(function() {
+            var $el = $(this);
+            var name = $el.attr('name');
+            if (!name) return;
+
+            if ($el.attr('type') === 'checkbox') {
+                optionsData.push({
+                    name: name,
+                    value: $el.is(':checked') ? '1' : '0'
+                });
+            } else {
+                optionsData.push({
+                    name: name,
+                    value: $el.val()
+                });
+            }
         });
 
         btn.prop('disabled', true);
@@ -34,7 +66,8 @@ jQuery(document).ready(function($) {
         });
     });
 
-    
+
+    // --- 3. Manual RAM Export Trigger ---
     $('#fsbhoa-export-ram-csv-btn').on('click', function(e) {
         e.preventDefault();
         var $btn = $(this);
@@ -59,7 +92,11 @@ jQuery(document).ready(function($) {
         })
         .always(function() {
             $btn.prop('disabled', false).text('Generate RAM CSV Now');
+            setTimeout(function() {
+                $feedback.fadeOut();
+            }, 5000);
         });
     });
+
 });
 

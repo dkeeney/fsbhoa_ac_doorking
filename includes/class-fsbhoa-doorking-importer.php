@@ -6,6 +6,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	die;
 }
 
+require_once plugin_dir_path( __FILE__ ) . 'class-fsbhoa-doorking-vendor-importer.php';
+
 class Fsbhoa_DoorKing_Importer {
 
 	private $is_dry_run = false;
@@ -15,6 +17,9 @@ class Fsbhoa_DoorKing_Importer {
 	// Curated explicit alias mapping for corner cases (DoorKing string => WP Target Name)
 	private $explicit_aliases = [
 		'ACOSTA T7K'      => [ 'first' => 'Kristi', 'last' => 'Acosta' ],
+        'ALLEN, K&E'      => [ 'first' => 'Karen', 'last' => 'Allen' ],
+        'ARRIBILAGA'      => [ 'first' => 'Terry', 'last' => 'Andrews' ],  // also Arribillaga
+        'ANYON, SHARON'   => [ 'first' => 'Sharon', 'last' => 'Anyan' ],
 		'BIEN & HEE YONG' => [ 'first' => 'Sharon Heeyong', 'last' => 'Bien' ],
 		'BLACK, D & R'    => [ 'first' => 'Debbie', 'last' => 'Black' ],
 		'BLACKWOOD'       => [ 'first' => 'Jeannette E', 'last' => 'Blackwood' ],
@@ -33,11 +38,25 @@ class Fsbhoa_DoorKing_Importer {
 		'RUDE-ODELL'      => [ 'first' => 'James', 'last' => 'Rude' ],
 		'STEVENSON, P&R'  => [ 'first' => 'Richard', 'last' => 'Stevenson' ],
 		'STOCK, LOREN'    => [ 'first' => 'Loren W', 'last' => 'Stock' ],
+        'THELEN, S'       => [ 'first' => 'Sara', 'last' => 'Allen' ],
+        'THEIEN, SARA'    => [ 'first' => 'Sara', 'last' => 'Allen' ],
 		'THOMAS, BILLY'   => [ 'first' => 'William', 'last' => 'Thomas' ],
 		'WILLIAM,GREG'    => [ 'first' => 'Greg', 'last' => 'Willmon' ],
 		'WILLIAMS,J + C'  => [ 'first' => 'Jeff', 'last' => 'Williams' ],
 		'YATES, C & R'    => [ 'first' => 'Carole', 'last' => 'Yates' ],
 		'YOUSEFZADEH, M'  => [ 'first' => 'Peylohi', 'last' => 'Yousefzadeh' ],
+
+        // Typos and Discrepancies
+        'ALVEREZ, L&K'    => [ 'first' => '%', 'last' => 'Alvarez' ],
+        'BLAKENSHIP D'    => [ 'first' => '%', 'last' => 'Blankenship' ],
+        'NUEBERT'         => [ 'first' => '%', 'last' => 'Neubert' ],
+        'RIVERIA M & D'   => [ 'first' => '%', 'last' => 'Rivera' ],
+        'VIGNORLI, E'     => [ 'first' => '%', 'last' => 'Vignolo' ],
+        'WALZTMAN, R'     => [ 'first' => '%', 'last' => 'Waltzman' ],
+        'ZAGUURSKI, H'    => [ 'first' => '%', 'last' => 'Zagurski' ],
+        'ORTIZ.CYNTHIA'   => [ 'first' => 'Cynthia', 'last' => 'Ortiz' ],
+        'JOSH MACIAS'     => [ 'first' => 'Josh', 'last' => 'Macias' ],
+        'PIRRELO LAURA'   => [ 'first' => 'Laura', 'last' => 'Pirrello' ],
 	];
 
 	public function __construct() {
@@ -57,61 +76,82 @@ class Fsbhoa_DoorKing_Importer {
 		);
 	}
 
-	public function render_page() {
-		?>
-		<div class="wrap">
-			<h1>DoorKing Baseline Backfill</h1>
-			<p>Upload your DoorKing <code>export.csv</code> file here. The system will match residents, backfill Directory/PIN codes, and register Windshield RFIDs with vehicle records.</p>
+    public function render_page() {
+        ?>
+        <div class="wrap">
+            <h1>DoorKing Baseline Backfill</h1>
+            <p>Upload your DoorKing <code>export.csv</code> file. Select whether you are matching and backfilling <strong>Residents</strong> or importing and organizing <strong>Vendors &amp; Contractors</strong>.</p>
 
-			<?php
-			$dry_run_results = get_transient( 'fsbhoa_dk_dry_run_' . get_current_user_id() );
-			if ( $dry_run_results !== false ) {
-				echo '<div class="notice notice-warning is-dismissible"><p><strong>Dry Run Complete (No data was saved).</strong> Review the log below.</p>';
-				echo '<textarea style="width: 100%; height: 450px; font-family: monospace; font-size: 12px; margin-bottom: 10px; padding: 10px; background: #f0f0f1; border: 1px solid #ccc; white-space: pre;" readonly>';
-				echo esc_textarea( implode( "\n", $dry_run_results ) );
-				echo '</textarea></div>';
-				delete_transient( 'fsbhoa_dk_dry_run_' . get_current_user_id() );
-			}
-			?>
+            <?php
+            // Check both resident and vendor dry-run transients
+            $dry_run_results = get_transient( 'fsbhoa_dk_dry_run_' . get_current_user_id() );
+            if ( false === $dry_run_results ) {
+                $dry_run_results = get_transient( 'fsbhoa_dk_vendor_dry_run_' . get_current_user_id() );
+            }
 
-			<?php if ( isset( $_GET['imported'] ) ) : ?>
-				<div class="notice notice-success is-dismissible"><p>Successfully processed <strong><?php echo absint( $_GET['imported'] ); ?></strong> records.</p></div>
-			<?php endif; ?>
+            if ( false !== $dry_run_results ) {
+                echo '<div class="notice notice-warning is-dismissible"><p><strong>Dry Run Complete (No data was saved).</strong> Review the log below.</p>';
+                echo '<textarea style="width: 100%; height: 450px; font-family: monospace; font-size: 12px; margin-bottom: 10px; padding: 10px; background: #f0f0f1; border: 1px solid #ccc; white-space: pre;" readonly>';
+                echo esc_textarea( implode( "\n", $dry_run_results ) );
+                echo '</textarea></div>';
+                delete_transient( 'fsbhoa_dk_dry_run_' . get_current_user_id() );
+                delete_transient( 'fsbhoa_dk_vendor_dry_run_' . get_current_user_id() );
+            }
+            ?>
 
-			<?php if ( isset( $_GET['error'] ) ) : ?>
-				<div class="notice notice-error is-dismissible"><p><?php echo esc_html( urldecode( $_GET['error'] ) ); ?></p></div>
-			<?php endif; ?>
+            <?php if ( isset( $_GET['imported'] ) ) : ?>
+                <div class="notice notice-success is-dismissible"><p>Successfully processed <strong><?php echo absint( $_GET['imported'] ); ?></strong> records.</p></div>
+            <?php endif; ?>
 
-			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" enctype="multipart/form-data" style="margin-top: 20px; padding: 20px; background: #fff; border: 1px solid #ccc; max-width: 650px;">
-				<input type="hidden" name="action" value="fsbhoa_doorking_import">
-				<?php wp_nonce_field( 'fsbhoa_doorking_import_nonce' ); ?>
+            <?php if ( isset( $_GET['error'] ) ) : ?>
+                <div class="notice notice-error is-dismissible"><p><?php echo esc_html( urldecode( $_GET['error'] ) ); ?></p></div>
+            <?php endif; ?>
 
-				<table class="form-table">
-					<tr>
-						<th scope="row"><label for="dk_csv">DoorKing CSV File</label></th>
-						<td><input type="file" name="dk_csv" id="dk_csv" accept=".csv" required></td>
-					</tr>
-					<tr>
-						<th scope="row">Execution Mode</th>
-						<td>
-							<label style="display:block; margin-bottom: 8px;">
-								<input type="checkbox" name="dry_run" value="1" checked>
-								<strong>Dry Run</strong> (Simulate without saving to database)
-							</label>
-							<label style="display:block;">
-								<input type="checkbox" name="log_only_errors" value="1" checked>
-								<strong>Exceptions Only Log</strong> (Hide successful matches)
-							</label>
-						</td>
-					</tr>
-				</table>
-				<p class="submit">
-					<button type="submit" class="button button-primary">Execute Import</button>
-				</p>
-			</form>
-		</div>
-		<?php
-	}
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" enctype="multipart/form-data" style="margin-top: 20px; padding: 20px; background: #fff; border: 1px solid #ccc; max-width: 650px;">
+                <input type="hidden" name="action" value="fsbhoa_doorking_import">
+                <?php wp_nonce_field( 'fsbhoa_doorking_import_nonce' ); ?>
+
+                <table class="form-table">
+                    <tr>
+                        <th scope="row"><label for="dk_csv">DoorKing CSV File</label></th>
+                        <td><input type="file" name="dk_csv" id="dk_csv" accept=".csv" required></td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Import Target</th>
+                        <td>
+                            <label style="margin-right: 18px;">
+                                <input type="radio" name="import_target" value="residents" checked="checked">
+                                <strong>Residents</strong> (Backfill RFIDs, Directory Codes &amp; Vehicles)
+                            </label>
+                            <br><br>
+                            <label>
+                                <input type="radio" name="import_target" value="vendors">
+                                <strong>Vendors &amp; Contractors</strong> (Parse V- Accounts, PINs &amp; Fobs)
+                            </label>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Execution Mode</th>
+                        <td>
+                            <label style="display:block; margin-bottom: 8px;">
+                                <input type="checkbox" name="dry_run" value="1" checked="checked">
+                                <strong>Dry Run</strong> (Simulate without saving to database)
+                            </label>
+                            <label style="display:block;">
+                                <input type="checkbox" name="log_only_errors" value="1" checked="checked">
+                                <strong>Exceptions Only Log</strong> (Resident mode: hide successful matches)
+                            </label>
+                        </td>
+                    </tr>
+                </table>
+                <p class="submit">
+                    <button type="submit" class="button button-primary">Execute Import</button>
+                </p>
+            </form>
+        </div>
+        <?php
+    }
+
 
 	private function fuzzy_name_match( $surname_tokens, $initials, $full_resident_string = '' ) {
 		global $wpdb;
@@ -123,7 +163,11 @@ class Fsbhoa_DoorKing_Importer {
 				continue;
 			}
 
-			$query = "SELECT id, household_id, property_id, first_name, last_name, cardholder_status FROM ac_cardholders WHERE last_name LIKE %s AND cardholder_status != 'archived'";
+            $query = "
+                SELECT id, household_id, property_id, first_name, last_name, cardholder_status
+                FROM ac_cardholders
+                WHERE last_name LIKE %s
+            ";
 			$token_candidates = $wpdb->get_results( $wpdb->prepare( $query, $token . '%' ) );
 			if ( ! empty( $token_candidates ) ) {
 				$candidates = array_merge( $candidates, $token_candidates );
@@ -223,6 +267,13 @@ class Fsbhoa_DoorKing_Importer {
 			exit;
 		}
 
+        // Delegate to Vendor Importer if selected
+        if ( isset( $_POST['import_target'] ) && 'vendors' === $_POST['import_target'] ) {
+            $vendor_importer = new Fsbhoa_DoorKing_Vendor_Importer();
+            $vendor_importer->process_file( $_FILES['dk_csv']['tmp_name'], isset( $_POST['dry_run'] ) );
+            return;
+        }
+
 		$this->is_dry_run      = isset( $_POST['dry_run'] ) ? true : false;
 		$this->log_only_errors = isset( $_POST['log_only_errors'] ) ? true : false;
 		$this->dry_run_log     = [];
@@ -244,20 +295,53 @@ class Fsbhoa_DoorKing_Importer {
 		$imported_count = 0;
 		$col_map        = array_flip( $headers );
 
-		if ( ! isset( $col_map['Resident'] ) || ! isset( $col_map['DEVICE#'] ) ) {
-			wp_redirect( add_query_arg( 'error', urlencode( 'Invalid CSV format. Missing "Resident" or "DEVICE#" columns.' ), wp_get_referer() ) );
-			exit;
-		}
+        $target_account = trim( (string) get_option( 'fsbhoa_dk_account_name', '' ) );
+
+        if ( empty( $target_account ) ) {
+                fclose( $handle );
+                wp_redirect( add_query_arg( 'error', urlencode( 'Configuration Error: DoorKing Account Name is not set in DoorKing Settings.' ), wp_get_referer() ) );
+                exit;
+        }
+
+        // Locate ACCOUNT column index
+        $account_idx = false;
+        foreach ( $headers as $idx => $header_name ) {
+                $clean_h = strtoupper( trim( $header_name, " \t\n\r\0\x0B\"'/" ) );
+                if ( $clean_h === 'ACCOUNT' ) {
+                        $account_idx = $idx;
+                        break;
+                }
+        }
+
+        if ( false === $account_idx ) {
+                fclose( $handle );
+                wp_redirect( add_query_arg( 'error', urlencode( 'Invalid CSV format: Missing "ACCOUNT" column.' ), wp_get_referer() ) );
+                exit;
+        }
+
+        // Determine resident/name header alias (6.5b vs 6.3h)
+        $name_key = isset( $col_map['Resident'] ) ? 'Resident' : ( isset( $col_map['NAME'] ) ? 'NAME' : null );
+
+        if ( ! $name_key || ! isset( $col_map['DEVICE#'] ) ) {
+                wp_redirect( add_query_arg( 'error', urlencode( 'Invalid CSV format. Missing "NAME" (or "Resident") or "DEVICE#" columns.' ), wp_get_referer() ) );
+                exit;
+        }
 
 		while ( ( $data = fgetcsv( $handle, 0, ',', '"', '\\' ) ) !== false ) {
-			$resident_name = trim( $data[ $col_map['Resident'] ] ?? '' );
-			$account_name  = trim( $data[ $col_map['ACCOUNT'] ] ?? '' );
+            $account_name = isset( $data[ $account_idx ] ) ? trim( $data[ $account_idx ], " \t\n\r\0\x0B\"'" ) : '';
+			$resident_name = trim( $data[ $col_map[ $name_key ] ] ?? '' );
 			$phone_raw     = trim( $data[ $col_map['PHONE'] ] ?? '' );
 			$aac_raw       = trim( $data[ $col_map['AAC'] ] ?? '' );
 
-			if ( empty( $resident_name ) || ( $account_name === 'NORTH GATES' && empty( $resident_name ) ) || $resident_name === '.' ) {
-				continue;
-			}
+            // Strictly skip non-matching accounts
+            if ( strcasecmp( $account_name, $target_account ) !== 0 ) {
+                continue;
+            }
+
+            // Discard empty lines.  They are contractor's test accounts.
+            if ( empty( $resident_name ) || $resident_name === '.' ) {
+                continue;
+            }
 
 			$is_vendor = isset( $col_map['VENDOR'] ) ? trim( $data[ $col_map['VENDOR'] ] ?? '' ) : 'N';
 			if ( strtoupper( $is_vendor ) === 'Y' ) {
@@ -285,18 +369,36 @@ class Fsbhoa_DoorKing_Importer {
 			$cardholder   = null;
 			$match_method = '';
 
-			// 1. Active Phone Match
-			if ( ! empty( $full_phone ) ) {
-				$cardholder = $wpdb->get_row( $wpdb->prepare(
-					"SELECT id, household_id, property_id, first_name, last_name, cardholder_status FROM ac_cardholders WHERE phone = %s AND cardholder_status != 'archived' LIMIT 1",
-					$full_phone
-				) );
-				if ( $cardholder ) {
-					$match_method = "Active Phone Match ({$full_phone})";
-				}
-			}
+            // 1. Explicit Alias Override  (manually match)
+            if ( ! $cardholder && isset( $this->explicit_aliases[ strtoupper( $resident_name ) ] ) ) {
+                $alias      = $this->explicit_aliases[ strtoupper( $resident_name ) ];
+                $cardholder = $wpdb->get_row( $wpdb->prepare(
+                     "SELECT id, household_id, property_id, first_name, last_name, cardholder_status
+                      FROM ac_cardholders
+                      WHERE first_name LIKE %s AND last_name LIKE %s
+                      LIMIT 1",
+                     '%' . $alias['first'] . '%',
+                     '%' . $alias['last'] . '%'
+                ) );
+                if ( $cardholder ) {
+                    $match_method = "Explicit Alias Map";
+                }
+            }
+            // 2. Phone Match across any status
+            if ( ! empty( $full_phone ) ) {
+                $cardholder = $wpdb->get_row( $wpdb->prepare(
+                    "SELECT id, household_id, property_id, first_name, last_name, cardholder_status
+                     FROM ac_cardholders
+                     WHERE phone = %s
+                     LIMIT 1",
+                    $full_phone
+                ) );
+                if ( $cardholder ) {
+                    $match_method = "Phone Match ({$full_phone})";
+                }
+            }
 
-			// 2. Fuzzy Name Match
+			// 3. Fuzzy Name Match
 			if ( ! $cardholder ) {
 				$cardholder = $this->fuzzy_name_match( $surname_tokens, $initials, $resident_name );
 				if ( $cardholder ) {
@@ -304,21 +406,6 @@ class Fsbhoa_DoorKing_Importer {
 				}
 			}
 
-			// 3. Explicit Alias Override
-			if ( ! $cardholder && isset( $this->explicit_aliases[ strtoupper( $resident_name ) ] ) ) {
-				$alias      = $this->explicit_aliases[ strtoupper( $resident_name ) ];
-				$cardholder = $wpdb->get_row( $wpdb->prepare(
-					"SELECT id, household_id, property_id, first_name, last_name, cardholder_status
-					 FROM ac_cardholders
-					 WHERE first_name LIKE %s AND last_name LIKE %s AND cardholder_status != 'archived'
-					 LIMIT 1",
-					'%' . $alias['first'] . '%',
-					'%' . $alias['last'] . '%'
-				) );
-				if ( $cardholder ) {
-					$match_method = "Explicit Alias Map";
-				}
-			}
 
 			// 4. Archived/Survivor Redirect
 			if ( ! $cardholder ) {
@@ -385,17 +472,32 @@ class Fsbhoa_DoorKing_Importer {
 			$dir_code = trim( $data[ $col_map['DIR'] ] ?? '' );
 			$ent_code = trim( $data[ $col_map['ENT'] ] ?? '' );
 
-			if ( ! empty( $dir_code ) ) {
-				$this->upsert_credential( $cardholder_id, null, 'DK_DIR_CODE', $dir_code );
-				if ( ! empty( $full_phone ) ) {
-					$this->upsert_credential( $cardholder_id, null, 'DK_DIR_OPT_IN', '1' );
-				}
-			}
+            // Get household members to distribute codes
+            $household_members = [];
+            if ( ! empty( $household_id ) && $household_id !== 'DRY_RUN_HH_ID' ) {
+                $household_members = $wpdb->get_col( $wpdb->prepare(
+                    "SELECT id FROM ac_cardholders WHERE household_id = %d AND cardholder_status = 'active'",
+                    $household_id
+                ) );
+            }
+            if ( empty( $household_members ) ) {
+                $household_members = [ $cardholder_id ];
+            }
+            // Assign the exact same DIR and ENTRY codes to all members of the household
+            foreach ( $household_members as $m_id ) {
+                if ( ! empty( $dir_code ) ) {
+                    $this->upsert_credential( $m_id, null, 'DK_DIR_CODE', $dir_code );
+                    if ( ! empty( $full_phone ) ) {
+                        $this->upsert_credential( $m_id, null, 'DK_DIR_OPT_IN', '1' );
+                    }
+                }
+            
+                if ( ! empty( $ent_code ) ) {
+                    $clean_ent = preg_replace( '/[^0-9]/', '', $ent_code );
+                    $this->upsert_credential( $m_id, null, 'DK_ENTRY_CODE', $clean_ent );
+                }
+            }
 
-			if ( ! empty( $ent_code ) ) {
-				$ent_code = preg_replace( '/[^0-9]/', '', $ent_code );
-				$this->upsert_credential( $cardholder_id, null, 'DK_ENTRY_CODE', $ent_code );
-			}
 
 			// 2. Vehicles and Windshield RFIDs: Upsert based on physical tag identity
 			$devices_to_check = [ [ 'dev' => 'DEVICE#', 'note' => 'NOTES' ] ];
@@ -527,7 +629,7 @@ class Fsbhoa_DoorKing_Importer {
 					'vehicle_id'       => $clean_veh_id,
 					'credential_type'  => $type,
 					'credential_value' => $value,
-					'status'           => 'valid',
+					'status'           => 'active',
 					'issue_date'       => current_time( 'Y-m-d' )
 				] );
 			}
@@ -538,7 +640,7 @@ class Fsbhoa_DoorKing_Importer {
 				$data_to_update = [
 					'cardholder_id'    => $cardholder_id,
 					'credential_value' => $value,
-					'status'           => 'valid'
+					'status'           => 'active'
 				];
 				if ( $clean_veh_id !== null ) {
 					$data_to_update['vehicle_id'] = $clean_veh_id;
