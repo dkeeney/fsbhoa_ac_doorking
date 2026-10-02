@@ -42,7 +42,20 @@ class Fsbhoa_DoorKing_Settings {
         // --- Section: RAM Sync Settings ---
         add_settings_section('fsbhoa_dk_sync_section', 'RAM Software Sync Settings', null, $page_slug);
 
-        // NEW FIELD: Account Name for DoorKing RAM (matches Column 1 of the CSV)
+        // RAM Version Selector
+        add_settings_field('fsbhoa_dk_ram_version_field', 'DoorKing RAM Version', array($this, 'render_field_callback'), $page_slug, 'fsbhoa_dk_sync_section', [
+            'id'      => 'fsbhoa_dk_ram_version',
+            'type'    => 'select',
+            'default' => '65.b',
+            'options' => [
+                '65.b' => 'Version 65.b (Column 2: "Resident")',
+                '63.h' => 'Version 63.h (Column 2: "NAME")',
+            ],
+            'desc'    => 'Select the installed DoorKing Remote Account Manager version.'
+        ]);
+        register_setting($option_group, 'fsbhoa_dk_ram_version', 'sanitize_text_field');
+
+        // Account Name for DoorKing RAM (matches Column 1 of the CSV)
         add_settings_field('fsbhoa_dk_account_name_field', 'DoorKing Account Name', array($this, 'render_field_callback'), $page_slug, 'fsbhoa_dk_sync_section', [
             'id' => 'fsbhoa_dk_account_name', 'type' => 'text', 'default' => 'NORTH GATES', 'desc' => 'The exact Account Name configured in the DoorKing Remote Account Manager (e.g., NORTH GATES).'
         ]);
@@ -62,6 +75,15 @@ class Fsbhoa_DoorKing_Settings {
             'id' => 'fsbhoa_dk_security_level', 'type' => 'text', 'default' => '01', 'desc' => 'The default RAM Security Level (Time Zone) assigned to all exported residents.'
         ]);
         register_setting($option_group, 'fsbhoa_dk_security_level', 'sanitize_text_field');
+
+        add_settings_field('fsbhoa_dk_local_area_code_field', 'Local Area Code', array($this, 'render_field_callback'), $page_slug, 'fsbhoa_dk_sync_section', [
+            'id'      => 'fsbhoa_dk_local_area_code',
+            'type'    => 'text',
+            'default' => '661',
+            'desc'    => 'Numbers matching this area code leave the AAC field blank in RAM to prevent 1+ dial errors.'
+        ]);
+        register_setting($option_group, 'fsbhoa_dk_local_area_code', 'sanitize_text_field');
+
 
         // --- Section: Vendor Code Rotation Settings ---
         add_settings_section(
@@ -135,27 +157,27 @@ class Fsbhoa_DoorKing_Settings {
         register_setting( $option_group, 'fsbhoa_dk_grace_after', 'absint' );
 
         add_settings_field(
-            'fsbhoa_dk_rotation_api_url_field', 
-            'Website Sync API Endpoint', 
-            array($this, 'render_field_callback'), 
-            $page_slug, 
+            'fsbhoa_dk_rotation_api_url_field',
+            'Website Sync API Endpoint',
+            array($this, 'render_field_callback'),
+            $page_slug,
             'fsbhoa_dk_rotation_section', [
-                'id' => 'fsbhoa_dk_rotation_api_url', 
-                'type' => 'url', 
-                'default' => '', 
+                'id' => 'fsbhoa_dk_rotation_api_url',
+                'type' => 'url',
+                'default' => '',
                 'desc' => 'External website webhook/API URL to push the updated vendor code to. https://access.fsbhoa.com/wp-json/fsbhoa/v1/ac-web-sync'
             ]
         );
         register_setting($option_group, 'fsbhoa_dk_rotation_api_url', 'esc_url_raw');
 
         add_settings_field(
-            'fsbhoa_dk_rotation_api_token_field', 
-            'API Bearer Token / Key', 
-            array($this, 'render_field_callback'), 
+            'fsbhoa_dk_rotation_api_token_field',
+            'API Bearer Token / Key',
+            array($this, 'render_field_callback'),
             $page_slug, 'fsbhoa_dk_rotation_section', [
-                'id' => 'fsbhoa_dk_rotation_api_token', 
-                'type' => 'password', 
-                'default' => '', 
+                'id' => 'fsbhoa_dk_rotation_api_token',
+                'type' => 'password',
+                'default' => '',
                 'desc' => 'Secret authorization token sent in the Authorization header. Must be the same as Vendor Gate code app on website. Use FSBHOA Sync Receiver API key on website.'
             ]
         );
@@ -190,6 +212,17 @@ class Fsbhoa_DoorKing_Settings {
         if ( 'checkbox' === $type ) {
             $checked = checked( 1, $value, false );
             echo "<label><input type='checkbox' name='{$id}' id='{$id}' value='1' {$checked} /> " . esc_html( $desc ) . "</label>";
+        } elseif ( 'select' === $type ) {
+            $options = $args['options'] ?? [];
+            echo "<select name='{$id}' id='{$id}'>";
+            foreach ( $options as $opt_val => $opt_label ) {
+                $selected = selected( $value, $opt_val, false );
+                echo "<option value='" . esc_attr( $opt_val ) . "' {$selected}>" . esc_html( $opt_label ) . "</option>";
+            }
+            echo "</select>";
+            if ( $desc ) {
+                echo "<p class='description'>" . esc_html( $desc ) . "</p>";
+            }
         } else {
             echo "<input type='{$type}' name='{$id}' id='{$id}' value='" . esc_attr( $value ) . "' class='regular-text' />";
             if ( $desc ) {

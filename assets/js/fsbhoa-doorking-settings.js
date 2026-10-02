@@ -26,7 +26,7 @@ jQuery(document).ready(function($) {
 
         // Gather all inputs on the settings page
         var optionsData = [];
-        $('#fsbhoa-doorking-settings-page input').each(function() {
+        $('#fsbhoa-doorking-settings-page input, #fsbhoa-doorking-settings-page select').each(function() {
             var $el = $(this);
             var name = $el.attr('name');
             if (!name) return;

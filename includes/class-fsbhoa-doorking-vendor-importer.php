@@ -16,6 +16,18 @@ class Fsbhoa_DoorKing_Vendor_Importer {
         'BRIGHTVIEW',
     ];
 
+    // Explicit manual mappings from DoorKing export strings to WordPress cardholder names
+    private $vendor_aliases = [
+        'S-EDDIE'         => [ 'first' => 'Edward',  'last' => 'Zepeda',     'company' => 'PMP' ],
+        'B-FELIC'         => [ 'first' => 'Felicia', 'last' => 'Trone',      'company' => 'Beauty Bar' ],
+        'B-FELICIA'       => [ 'first' => 'Felicia', 'last' => 'Trone',      'company' => 'Beauty Bar' ],
+        'B- KRISTIN'      => [ 'first' => 'Kristin', 'last' => 'Hayes',      'company' => 'Beauty Bar', ],
+        'B-KRIST'         => [ 'first' => 'Kristin', 'last' => 'Hayes',      'company' => 'Beauty Bar' ],
+        'THOMPSON, AMY'   => [ 'first' => 'Amy',     'last' => 'Thompson',   'company' => 'PMP' ],
+        'VILLANUEVA, RAU' => [ 'first' => 'Raul',    'last' => 'Villanueva', 'company' => 'PMP' ],
+    ];
+
+    
     public function process_file( $file_path, $is_dry_run = true ) {
         $this->is_dry_run  = $is_dry_run;
         $this->dry_run_log = [];
@@ -28,208 +40,25 @@ class Fsbhoa_DoorKing_Vendor_Importer {
             $this->dry_run_log[] = "--------------------------------------------------";
         }
 
-        if ( ( $handle = fopen( $file_path, 'r' ) ) === false ) {
-            wp_redirect( add_query_arg( 'error', urlencode( 'Could not open CSV file.' ), wp_get_referer() ) );
-            exit;
+        $init = $this->validate_and_open_csv( $file_path );
+        if ( ! $init ) {
+            return;
         }
 
-        global $wpdb;
-        $headers        = fgetcsv( $handle, 0, ',', '"', '\\' );
+        $handle         = $init['handle'];
+        $col_map        = $init['col_map'];
+        $name_key       = $init['name_key'];
+        $target_account = $init['target_account'];
+
+        $company_cache  = [];
         $imported_count = 0;
-        $col_map        = array_flip( $headers );
 
-        $target_account = trim( (string) get_option( 'fsbhoa_dk_account_name', '' ) );
-
-        if ( empty( $target_account ) ) {
-            fclose( $handle );
-            wp_redirect( add_query_arg( 'error', urlencode( 'Configuration Error: DoorKing Account Name is not set in DoorKing Settings.' ), wp_get_referer() ) );
-            exit;
-        }
-        // Locate the ACCOUNT column index reliably (handling whitespace/quotes/BOM)
-        $account_idx = false;
-        foreach ( $headers as $idx => $header_name ) {
-            $clean_h = strtoupper( trim( $header_name, " \t\n\r\0\x0B\"'/" ) );
-            if ( $clean_h === 'ACCOUNT' ) {
-                $account_idx = $idx;
-                break;
+        // PHP 8.4 compatible CSV loop (avoids deprecated backslash escape parameter)
+        while ( ( $data = fgetcsv( $handle, 0, ',', '"', '' ) ) !== false ) {
+            $processed = $this->process_vendor_row( $data, $col_map, $name_key, $target_account, $company_cache );
+            if ( $processed ) {
+                $imported_count++;
             }
-        }
-
-        if ( false === $account_idx ) {
-            fclose( $handle );
-            wp_redirect( add_query_arg( 'error', urlencode( 'Invalid CSV format: Missing "ACCOUNT" column.' ), wp_get_referer() ) );
-            exit;
-        }
-
-        // Determine resident/name header alias (6.5b vs 6.3h)
-        $name_key = isset( $col_map['Resident'] ) ? 'Resident' : ( isset( $col_map['NAME'] ) ? 'NAME' : null );
-        if ( ! $name_key ) {
-            wp_redirect( add_query_arg( 'error', urlencode( 'Invalid CSV format. Missing "NAME" (or "Resident") column.' ), wp_get_referer() ) );
-            exit;
-        }
-
-        $company_cache = [];
-
-        while ( ( $data = fgetcsv( $handle, 0, ',', '"', '\\' ) ) !== false ) {
-            $resident_name = trim( $data[ $col_map[ $name_key ] ] ?? '' );
-            $account_name  = isset( $col_map['ACCOUNT'] ) ? trim( $data[ $col_map['ACCOUNT'] ] ?? '' ) : '';
-            $is_vendor_col = isset( $col_map['VENDOR'] ) ? trim( $data[ $col_map['VENDOR'] ] ?? '' ) : '';
-
-            // STRICT FILTER: If the row account does not match the configured target account, skip it
-            if ( strcasecmp( $account_name, $target_account ) !== 0 ) {
-                continue;
-            }
-
-            // Route empty or "." maintenance slots directly to Open & Shut
-            if ( empty( $resident_name ) || $resident_name === '.' ) {
-                $resident_name = 'Open & Shut';
-                $is_vendor     = true;
-            } else {
-                $is_vendor = ( 'Y' === strtoupper( $is_vendor_col ) )
-                          || ( 0 === stripos( $resident_name, 'V-' ) )
-                          || ( 0 === stripos( $resident_name, 'V -' ) );
-            }
-
-            if ( ! $is_vendor ) {
-                continue;
-            }
-
-            $clean_company = strtoupper($this->normalize_company_name( $resident_name ));
-            $category      = $this->infer_category( $clean_company );
-
-            // Check if vendor is marked inactive
-            $initial_status = 'active';
-            foreach ( $this->inactive_vendors as $inactive_name ) {
-                if ( false !== stripos( $clean_company, $inactive_name ) ) {
-                    $initial_status = 'inactive';
-                    break;
-                }
-            }
-
-            $parts      = explode( ' ', $clean_company, 2 );
-            $first_name = $parts[0] ?? '';
-            $last_name  = $parts[1] ?? 'Vendor';
-
-            $cardholder_id = null;
-
-            if ( isset( $company_cache[ $clean_company ] ) ) {
-                $cardholder_id = $company_cache[ $clean_company ];
-                if ( $this->is_dry_run ) {
-                    $this->dry_run_log[] = "[APPEND TO VENDOR] Company: '{$clean_company}' (Merging multi-row devices)";
-                }
-            } else {
-                // 1. Match by Company Name first (active or purged)
-                $existing = $wpdb->get_row( $wpdb->prepare(
-                    "SELECT id, cardholder_status
-                     FROM ac_cardholders
-                     WHERE company = %s
-                       AND cardholder_type = 'vendor'
-                     LIMIT 1",
-                    $clean_company
-                ) );
-
-                // 2. Fallback: Match by Person Name (handles staff & named contractors)
-                if ( ! $existing && ! empty( $first_name ) && ! empty( $last_name ) ) {
-                    $existing = $wpdb->get_row( $wpdb->prepare(
-                        "SELECT id, cardholder_status
-                         FROM ac_cardholders
-                         WHERE UPPER(TRIM(first_name)) = %s
-                           AND UPPER(TRIM(last_name)) = %s
-                         LIMIT 1",
-                        strtoupper( trim( $first_name ) ),
-                        strtoupper( trim( $last_name ) )
-                    ) );
-                }
-
-                if ( $this->is_dry_run ) {
-                    $status_label = $existing ? "[EXISTING VENDOR (ID: {$existing->id})]" : "[NEW VENDOR]";
-                    if ( 'inactive' === $initial_status ) {
-                        $status_label .= " [MARKED INACTIVE]";
-                    }
-                    $this->dry_run_log[] = "{$status_label} Company: '{$clean_company}' | Category: {$category}";
-                    $cardholder_id = 'DRY_RUN_' . sanitize_title( $clean_company );
-                } else {
-                    if ( $existing ) {
-                        $cardholder_id = absint( $existing->id );
-
-                        // Reactivate if previously purged and update classification
-                        $wpdb->update(
-                            'ac_cardholders',
-                            [
-                                'company'           => $clean_company,
-                                'cardholder_type'   => 'vendor',
-                                'resident_type'     => $category,
-                                'cardholder_status' => ( $existing->cardholder_status === 'purged' ) ? 'active' : $existing->cardholder_status,
-                                'updated_at'        => current_time( 'mysql' ),
-                            ],
-                            [ 'id' => $cardholder_id ]
-                        );
-                    } else {
-                        // Create brand new vendor record
-                        $wpdb->insert( 'ac_cardholders', [
-                            'first_name'        => $first_name,
-                            'last_name'         => $last_name,
-                            'company'           => $clean_company,
-                            'cardholder_type'   => 'vendor',
-                            'resident_type'     => $category,
-                            'cardholder_status' => $initial_status,
-                            'created_at'        => current_time( 'mysql' ),
-                            'updated_at'        => current_time( 'mysql' ),
-                        ] );
-                        $cardholder_id = $wpdb->insert_id;
-                    }
-                }
-                $company_cache[ $clean_company ] = $cardholder_id;
-            }
-
-            // 1. PIN Code (ENT column)
-            $ent_code = isset( $col_map['ENT'] ) ? preg_replace( '/[^0-9]/', '', trim( $data[ $col_map['ENT'] ] ?? '' ) ) : '';
-            if ( ! empty( $ent_code ) ) {
-                $this->upsert_credential( $cardholder_id, null, 'DK_ENTRY_CODE', $ent_code, '', $initial_status );
-            }
-
-            // (DK_DIR_CODE omitted intentionally for all vendors)
-
-            // 2. Scan Devices (0xxxx = PIN, 1xxxx = Windshield)
-            $devices_to_check = [ [ 'dev' => 'DEVICE#', 'note' => 'NOTES' ] ];
-            for ( $i = 2; $i <= 26; $i++ ) {
-                $devices_to_check[] = [ 'dev' => 'DEVICE' . $i, 'note' => 'NOTES' . $i ];
-            }
-
-            foreach ( $devices_to_check as $fields ) {
-                if ( ! isset( $col_map[ $fields['dev'] ] ) ) {
-                    continue;
-                }
-
-                $raw_device = trim( $data[ $col_map[ $fields['dev'] ] ] ?? '' );
-                $device_num = preg_replace( '/[^0-9]/', '', $raw_device );
-                $note       = trim( $data[ $col_map[ $fields['note'] ] ] ?? '' );
-
-                if ( empty( $device_num ) ) {
-                    continue;
-                }
-
-                // 5-digit devices starting with 0 are gate PINs (strip leading 0)
-                if ( 5 === strlen( $device_num ) && '0' === substr( $device_num, 0, 1 ) ) {
-                    $pin_val = substr( $device_num, 1 );
-                    $this->upsert_credential( $cardholder_id, null, 'DK_ENTRY_CODE', $pin_val, $note, $initial_status );
-                }
-                // 5-digit devices starting with 1 are windshield RFID tags
-                elseif ( 5 === strlen( $device_num ) && '1' === substr( $device_num, 0, 1 ) ) {
-                    $vehicle_id = $this->resolve_vendor_vehicle( $cardholder_id, $note, $device_num );
-                    $this->upsert_credential( $cardholder_id, $vehicle_id, 'DK_WINDSHIELD', $device_num, $note, $initial_status );
-                }
-                // Fallback for standard fobs
-                else {
-                    $this->upsert_credential( $cardholder_id, null, 'WIEGAND_26', $device_num, $note, $initial_status );
-                }
-            }
-
-            if ( $this->is_dry_run ) {
-                $this->dry_run_log[] = "";
-            }
-
-            $imported_count++;
         }
 
         fclose( $handle );
@@ -242,6 +71,279 @@ class Fsbhoa_DoorKing_Vendor_Importer {
 
         wp_redirect( add_query_arg( 'imported', $imported_count, wp_get_referer() ) );
         exit;
+    }
+
+    /**
+     * Validates headers, account configuration, and opens the file handle.
+     */
+    private function validate_and_open_csv( $file_path ) {
+        if ( ( $handle = fopen( $file_path, 'r' ) ) === false ) {
+            wp_redirect( add_query_arg( 'error', urlencode( 'Could not open CSV file.' ), wp_get_referer() ) );
+            exit;
+        }
+
+        $target_account = trim( (string) get_option( 'fsbhoa_dk_account_name', '' ) );
+        if ( empty( $target_account ) ) {
+            fclose( $handle );
+            wp_redirect( add_query_arg( 'error', urlencode( 'Configuration Error: DoorKing Account Name is not set in DoorKing Settings.' ), wp_get_referer() ) );
+            exit;
+        }
+
+        $headers = fgetcsv( $handle, 0, ',', '"', '' );
+        if ( empty( $headers ) ) {
+            fclose( $handle );
+            wp_redirect( add_query_arg( 'error', urlencode( 'Uploaded CSV file is empty.' ), wp_get_referer() ) );
+            exit;
+        }
+
+        $col_map     = array_flip( $headers );
+        $account_idx = false;
+
+        foreach ( $headers as $idx => $header_name ) {
+            $clean_h = strtoupper( trim( $header_name, " \t\n\r\0\x0B\"'/" ) );
+            if ( 'ACCOUNT' === $clean_h ) {
+                $account_idx = $idx;
+                break;
+            }
+        }
+
+        if ( false === $account_idx ) {
+            fclose( $handle );
+            wp_redirect( add_query_arg( 'error', urlencode( 'Invalid CSV format: Missing "ACCOUNT" column.' ), wp_get_referer() ) );
+            exit;
+        }
+
+        $name_key = isset( $col_map['Resident'] ) ? 'Resident' : ( isset( $col_map['NAME'] ) ? 'NAME' : null );
+        if ( ! $name_key ) {
+            fclose( $handle );
+            wp_redirect( add_query_arg( 'error', urlencode( 'Invalid CSV format. Missing "NAME" (or "Resident") column.' ), wp_get_referer() ) );
+            exit;
+        }
+
+        return [
+            'handle'         => $handle,
+            'col_map'        => $col_map,
+            'name_key'       => $name_key,
+            'target_account' => $target_account,
+        ];
+    }
+
+    /**
+     * Parses and handles routing for a single vendor row.
+     */
+    private function process_vendor_row( array $data, array $col_map, $name_key, $target_account, array &$company_cache ) {
+        $resident_name = trim( $data[ $col_map[ $name_key ] ] ?? '' );
+        $account_name  = isset( $col_map['ACCOUNT'] ) ? trim( $data[ $col_map['ACCOUNT'] ] ?? '' ) : '';
+        $is_vendor_col = isset( $col_map['VENDOR'] ) ? trim( $data[ $col_map['VENDOR'] ] ?? '' ) : '';
+
+        // Filter account
+        if ( 0 !== strcasecmp( $account_name, $target_account ) ) {
+            return false;
+        }
+
+        // Special case: empty or "." maintenance slots
+        if ( empty( $resident_name ) || '.' === $resident_name ) {
+            $resident_name = 'Open & Shut';
+            $is_vendor     = true;
+        } else {
+            $is_vendor = ( 'Y' === strtoupper( $is_vendor_col ) )
+                      || ( 0 === stripos( $resident_name, 'V-' ) )
+                      || ( 0 === stripos( $resident_name, 'V -' ) );
+        }
+
+        if ( ! $is_vendor ) {
+            return false;
+        }
+
+        $clean_company  = strtoupper( $this->normalize_company_name( $resident_name ) );
+        $initial_status = $this->determine_initial_status( $clean_company );
+
+        $cardholder_id = $this->resolve_vendor_cardholder( $clean_company, $resident_name, $initial_status, $company_cache );
+        if ( ! $cardholder_id ) {
+            return false;
+        }
+
+        $this->import_row_credentials( $data, $col_map, $cardholder_id, $initial_status );
+
+        if ( $this->is_dry_run ) {
+            $this->dry_run_log[] = '';
+        }
+
+        return true;
+    }
+
+    /**
+     * Checks inactive list to set active vs inactive.
+     */
+    private function determine_initial_status( $clean_company ) {
+        foreach ( $this->inactive_vendors as $inactive_name ) {
+            if ( false !== stripos( $clean_company, $inactive_name ) ) {
+                return 'inactive';
+            }
+        }
+        return 'active';
+    }
+
+    /**
+     * Resolves an existing cardholder via aliases, company name, or contact name.
+     */
+    private function resolve_vendor_cardholder( $clean_company, $resident_name, $initial_status, array &$company_cache ) {
+        global $wpdb;
+
+        if ( isset( $company_cache[ $clean_company ] ) ) {
+            if ( $this->is_dry_run ) {
+                $this->dry_run_log[] = "[APPEND TO VENDOR] Company: '{$clean_company}' (Merging multi-row devices)";
+            }
+            return $company_cache[ $clean_company ];
+        }
+
+        $existing = null;
+        $category = $this->infer_category( $clean_company );
+        $parts    = explode( ' ', $clean_company, 2 );
+        $first    = $parts[0] ?? '';
+        $last     = $parts[1] ?? 'Vendor';
+
+        // 1. Alias Map lookup
+        $lookup_key = strtoupper( trim( $clean_company ) );
+        if ( isset( $this->vendor_aliases[ $lookup_key ] ) ) {
+            $alias = $this->vendor_aliases[ $lookup_key ];
+            if ( ! empty( $alias['company'] ) ) {
+                $clean_company = $alias['company'];
+            }
+
+            $existing = $wpdb->get_row( $wpdb->prepare(
+                "SELECT id, cardholder_status, company
+                 FROM ac_cardholders
+                 WHERE UPPER(TRIM(first_name)) = %s
+                   AND UPPER(TRIM(last_name)) = %s
+                   AND cardholder_status != 'purged'
+                 LIMIT 1",
+                strtoupper( trim( $alias['first'] ) ),
+                strtoupper( trim( $alias['last'] ) )
+            ) );
+
+            if ( $existing ) {
+                if ( $this->is_dry_run ) {
+                    $this->dry_run_log[] = "[ALIAS MATCH] DK '{$resident_name}' -> Cardholder: {$alias['first']} {$alias['last']} (ID: {$existing->id}) | Set Company: {$clean_company}";
+                } elseif ( empty( $existing->company ) ) {
+                    $wpdb->update(
+                        'ac_cardholders',
+                        [ 'company' => $clean_company ],
+                        [ 'id' => absint( $existing->id ) ]
+                    );
+                }
+            }
+        }
+
+        // 2. Company Name lookup
+        if ( ! $existing ) {
+            $existing = $wpdb->get_row( $wpdb->prepare(
+                "SELECT id, cardholder_status, company
+                 FROM ac_cardholders
+                 WHERE company = %s
+                   AND cardholder_type = 'vendor'
+                 LIMIT 1",
+                $clean_company
+            ) );
+        }
+
+        // 3. Contact Name fallback
+        if ( ! $existing && ! empty( $first ) && ! empty( $last ) ) {
+            $existing = $wpdb->get_row( $wpdb->prepare(
+                "SELECT id, cardholder_status, company
+                 FROM ac_cardholders
+                 WHERE UPPER(TRIM(first_name)) = %s
+                   AND UPPER(TRIM(last_name)) = %s
+                 LIMIT 1",
+                strtoupper( trim( $first ) ),
+                strtoupper( trim( $last ) )
+            ) );
+        }
+
+        if ( $this->is_dry_run ) {
+            $status_label = $existing ? "[EXISTING VENDOR (ID: {$existing->id})]" : "[NEW VENDOR]";
+            if ( 'inactive' === $initial_status ) {
+                $status_label .= ' [MARKED INACTIVE]';
+            }
+            $this->dry_run_log[] = "{$status_label} Company: '{$clean_company}' | Category: {$category}";
+            $cardholder_id = 'DRY_RUN_' . sanitize_title( $clean_company );
+        } else {
+            if ( $existing ) {
+                $cardholder_id = absint( $existing->id );
+                $wpdb->update(
+                    'ac_cardholders',
+                    [
+                        'company'           => $clean_company,
+                        'cardholder_type'   => 'vendor',
+                        'resident_type'     => $category,
+                        'cardholder_status' => ( 'purged' === $existing->cardholder_status ) ? 'active' : $existing->cardholder_status,
+                        'updated_at'        => current_time( 'mysql' ),
+                    ],
+                    [ 'id' => $cardholder_id ]
+                );
+            } else {
+                $wpdb->insert( 'ac_cardholders', [
+                    'first_name'        => $first,
+                    'last_name'         => $last,
+                    'company'           => $clean_company,
+                    'cardholder_type'   => 'vendor',
+                    'resident_type'     => $category,
+                    'cardholder_status' => $initial_status,
+                    'created_at'        => current_time( 'mysql' ),
+                    'updated_at'        => current_time( 'mysql' ),
+                ] );
+                $cardholder_id = (int) $wpdb->insert_id;
+            }
+        }
+
+        $company_cache[ $clean_company ] = $cardholder_id;
+        return $cardholder_id;
+    }
+
+    /**
+     * Extracts and upserts PINs and RFIDs from row columns.
+     */
+    private function import_row_credentials( array $data, array $col_map, $cardholder_id, $initial_status ) {
+        // 1. Primary PIN (ENT column)
+        $ent_code = isset( $col_map['ENT'] ) ? preg_replace( '/[^0-9]/', '', trim( $data[ $col_map['ENT'] ] ?? '' ) ) : '';
+        if ( ! empty( $ent_code ) ) {
+            $this->upsert_credential( $cardholder_id, null, 'DK_ENTRY_CODE', $ent_code, '', $initial_status );
+        }
+
+        // 2. Scan Devices (DEVICE# and DEVICE2..DEVICE26)
+        $devices_to_check = [ [ 'dev' => 'DEVICE#', 'note' => 'NOTES' ] ];
+        for ( $i = 2; $i <= 26; $i++ ) {
+            $devices_to_check[] = [ 'dev' => 'DEVICE' . $i, 'note' => 'NOTES' . $i ];
+        }
+
+        foreach ( $devices_to_check as $fields ) {
+            if ( ! isset( $col_map[ $fields['dev'] ] ) ) {
+                continue;
+            }
+
+            $raw_device = trim( $data[ $col_map[ $fields['dev'] ] ] ?? '' );
+            $device_num = preg_replace( '/[^0-9]/', '', $raw_device );
+            $note       = trim( $data[ $col_map[ $fields['note'] ] ] ?? '' );
+
+            if ( empty( $device_num ) ) {
+                continue;
+            }
+
+            // 5-digit device starting with 0 is an entry PIN
+            if ( 5 === strlen( $device_num ) && '0' === substr( $device_num, 0, 1 ) ) {
+                $pin_val = substr( $device_num, 1 );
+                $this->upsert_credential( $cardholder_id, null, 'DK_ENTRY_CODE', $pin_val, $note, $initial_status );
+            }
+            // 5-digit device starting with 1 is a windshield RFID
+            elseif ( 5 === strlen( $device_num ) && '1' === substr( $device_num, 0, 1 ) ) {
+                $vehicle_id = $this->resolve_vendor_vehicle( $cardholder_id, $note, $device_num );
+                $this->upsert_credential( $cardholder_id, $vehicle_id, 'DK_WINDSHIELD', $device_num, $note, $initial_status );
+            }
+            // Other lengths are standard pedestrian fobs
+            else {
+                $this->upsert_credential( $cardholder_id, null, 'WIEGAND_26', $device_num, $note, $initial_status );
+            }
+        }
     }
 
     private function normalize_company_name( $raw_name ) {
