@@ -28,8 +28,8 @@ class FSBHOA_AC_DoorKing {
 
         // Hook into WordPress init to setup the rest of the plugin
         add_action( 'plugins_loaded', [ $this, 'init_plugin' ] );
-        add_action( 'fsbhoa_vehicle_table_header', [ $this, 'render_vehicle_header' ] );
-        add_action( 'fsbhoa_vehicle_table_row_columns', [ $this, 'render_vehicle_row_column' ], 10, 2 );
+        add_action( 'fsbhoa_vehicle_table_head', [ $this, 'render_vehicle_header' ] );
+        add_action( 'fsbhoa_vehicle_table_row_columns', [ $this, 'render_vehicle_row_column' ], 10, 3 );
         add_action( 'fsbhoa_core_vehicle_saved', [ $this, 'save_vehicle_credential' ], 10, 3 );
         //
         // Hook for merge, restore, and household transfer
@@ -174,6 +174,51 @@ class FSBHOA_AC_DoorKing {
         $household_id    = isset( $form_data['household_id'] ) ? absint( $form_data['household_id'] ) : 0;
         $cardholder_type = isset( $form_data['cardholder_type'] ) ? $form_data['cardholder_type'] : 'resident';
 
+        // -------------------------------------------------------------
+        // READ-ONLY / SUMMARY CARD MODE
+        // -------------------------------------------------------------
+        if ( ! $is_edit_mode ) {
+            $entry_code = $wpdb->get_var( $wpdb->prepare(
+                "SELECT credential_value FROM ac_credentials WHERE cardholder_id = %d AND credential_type = 'DK_ENTRY_CODE' AND credential_value != '' LIMIT 1",
+                $cardholder_id
+            ) );
+            if ( empty( $entry_code ) && $household_id > 0 ) {
+                $entry_code = $wpdb->get_var( $wpdb->prepare(
+                    "SELECT cr.credential_value FROM ac_credentials cr JOIN ac_cardholders c ON cr.cardholder_id = c.id WHERE c.household_id = %d AND cr.credential_type = 'DK_ENTRY_CODE' AND cr.credential_value != '' LIMIT 1",
+                    $household_id
+                ) );
+            }
+
+            $dir_code = $wpdb->get_var( $wpdb->prepare(
+                "SELECT credential_value FROM ac_credentials WHERE cardholder_id = %d AND credential_type = 'DK_DIR_CODE' AND credential_value != '' LIMIT 1",
+                $cardholder_id
+            ) );
+            if ( empty( $dir_code ) && $household_id > 0 ) {
+                $dir_code = $wpdb->get_var( $wpdb->prepare(
+                    "SELECT cr.credential_value FROM ac_credentials cr JOIN ac_cardholders c ON cr.cardholder_id = c.id WHERE c.household_id = %d AND cr.credential_type = 'DK_DIR_CODE' AND cr.credential_value != '' LIMIT 1",
+                    $household_id
+                ) );
+            }
+
+            if ( ! empty( $dir_code ) ) {
+                echo '<span style="padding: 4px 8px; border-radius: 4px; font-size: 12px; border: 1px solid #ccd0d4; background: #f6f7f7;">';
+                echo '<strong@Dir Code:></strong> <code>[ ' . esc_html( $dir_code ) . ' ]></code>';
+                echo '</span>';
+            }
+
+            if ( ! empty( $entry_code ) ) {
+                echo '<span style="padding: 4px 8px; border-radius: 4px; font-size: 12px; border: 1px solid #ccd0d4; background: #f6f7f7;">';
+                echo '<strong>Gate Code:</strong> <code>[ #' . esc_html( $entry_code ) . ' ]</code>';
+                echo '</span>';
+            }
+
+            return;
+        }
+
+        // -------------------------------------------------------------
+        // EDIT MODE (Original form controls)
+        // -------------------------------------------------------------
+
         // Fetch all non-vehicle credentials for this cardholder
         $all_pins = [];
         $dir_code = '';
@@ -307,8 +352,8 @@ class FSBHOA_AC_DoorKing {
 
         $opt_in_val = ( $opt_in !== '0' ) ? $opt_in : ( $household_opt ?: '0' );
         ?>
-        <div class="postbox" style="margin-top: 15px;">
-            <div class="inside" style="padding: 12px 16px;">
+        <div class="postbox" style="margin-top: 5px;">
+            <div class="inside" style="padding: 12px 6px;">
                 <!-- Main Controls Line (Prevents wrapping) -->
                 <div style="display: flex; align-items: center; gap: 20px; flex-wrap: nowrap;">
                     <span style="font-weight: 600; font-size: 13px; color: #1d2327; white-space: nowrap;">
@@ -533,31 +578,67 @@ class FSBHOA_AC_DoorKing {
     /**
      * Inject the Header Column for the Vehicle Table
      */
-    public function render_vehicle_header() {
-        echo '<th style="padding: 6px; width: 20%;">Windshield RFID</th>';
+    public function render_vehicle_header($is_edit_mode = true ) {
+        echo '<th style="padding: 6px; width: 20%;" colspan=2>Windshield Tags</th>';
     }
 
     /**
      * Inject the Windshield RFID input for a specific vehicle row
      */
-    public function render_vehicle_row_column( $v_id, $index ) {
+    public function render_vehicle_row_column( $v_id, $index, $is_edit_mode = true ) {
         global $wpdb;
         $rfid_val = '';
+        $status_val = 'active';
 
         if ( $v_id > 0 ) {
-            $rfid_val = $wpdb->get_var( $wpdb->prepare(
-                "SELECT credential_value FROM ac_credentials WHERE vehicle_id = %d AND credential_type = 'DK_WINDSHIELD'",
-                $v_id
-            ) );
+          $cred = $wpdb->get_row( $wpdb->prepare(
+            "SELECT credential_value, status
+             FROM ac_credentials
+             WHERE vehicle_id = %d AND credential_type = 'DK_WINDSHIELD' LIMIT 1",
+            $v_id
+          ), ARRAY_A );
+
+          if ( $cred ) {
+            $rfid_val  = $cred['credential_value'] ?? '';
+            $status_val = $cred['status'] ?? 'active';
+          }
         }
+
+        // 1. READ-ONLY / SUMMARY MODE
+        if ( ! $is_edit_mode ) {
+            // Value cell: narrow (approx 7%)
+            echo '<td style="padding: 6px 8px; width: 7%; white-space: nowrap;">' .
+                 ( ! empty( $rfid_val ) ? '<code>' . esc_html( $rfid_val ) . '</code>' : '<span style="color:#8c8f94;">—</span>' ) .
+                 '</td>';
+
+            $status_color = ( 'active' === $status_val ) ? '#137333' : '#d63638';
+            $status_text  = ! empty( $rfid_val ) ? ucfirst( $status_val ) : '—';
+
+            // Status cell: wider (approx 13%), guaranteed single-line display
+            echo '<td style="padding: 6px 8px; width: 13%; white-space: nowrap;">' .
+                 '  <span style="color:' . $status_color . ';font-weight:600;">' .
+                 esc_html( $status_text ) .
+                 '  </span>
+                 </td>';
+            return;
+        }
+
+        // 2. EDIT MODE
         ?>
-        <td style="padding: 4px;">
-            <input type="text"
-                   name="vehicle_rows[<?php echo esc_attr( $index ); ?>][dk_windshield]"
-                   value="<?php echo esc_attr( $rfid_val ); ?>"
-                   maxlength="5"
-                   pattern="\d*"
-                   style="width: 100%; padding: 2px; font-size: 12px;" />
+        <td style="padding: 4px; width: 7%;">
+          <input type="text"
+               name="vehicle_rows[<?php echo esc_attr( $index ); ?>][dk_windshield]"
+              value="<?php echo esc_attr( $rfid_val ); ?>"
+              maxlength="5"
+              pattern="\d*"
+              style="width: 100%; min-width: 65px; padding: 2px; font-size: 12px;" />
+        </td>
+        <td style="padding: 4px; width: 13%;">
+          <select name="vehicle_rows[<?php echo esc_attr( $index ); ?>][dk_windshield_status]"
+                style="width: 100%; min-width: 85px; padding: 2px; font-size: 12px;">
+            <option value="active" <?php selected( $status_val, 'active' ); ?>>Active</option>
+            <option value="disabled" <?php selected( $status_val, 'disabled' ); ?>>Disabled</option>
+          </select>
         </td>
         <?php
     }
@@ -573,6 +654,8 @@ class FSBHOA_AC_DoorKing {
         global $wpdb;
 
         $val       = preg_replace( '/[^0-9]/', '', $raw_row['dk_windshield'] );
+        $raw_status  = sanitize_text_field( $raw_row['dk_windshield_status'] ?? 'active' );
+        $status      = in_array( $raw_status, [ 'active', 'disabled' ], true ) ? $raw_status : 'active';
         $type_code = 'DK_WINDSHIELD';
 
         $exists = $wpdb->get_var( $wpdb->prepare(
@@ -584,7 +667,11 @@ class FSBHOA_AC_DoorKing {
         if ( $val !== '' ) {
             if ( $exists ) {
                 $wpdb->update( 'ac_credentials',
-                    [ 'credential_value' => $val, 'cardholder_id' => $cardholder_id, 'status' => 'active' ],
+                    [ 
+                        'credential_value' => $val, 
+                        'cardholder_id' => $cardholder_id, 
+                        'status' => $status
+                    ],
                     [ 'id' => $exists ]
                 );
             } else {
@@ -593,7 +680,7 @@ class FSBHOA_AC_DoorKing {
                     'vehicle_id'       => $vehicle_id,
                     'credential_type'  => $type_code,
                     'credential_value' => $val,
-                    'status'           => 'active',
+                    'status'           => $status,
                     'issue_date'       => current_time( 'Y-m-d' )
                 ] );
             }
@@ -792,50 +879,58 @@ class FSBHOA_AC_DoorKing {
      * @param int $target_household_id The household ID they joined.
      * @param int $old_household_id    The household ID they left.
      */
-    public function handle_household_changed( $cardholder_id, $target_household_id, $old_household_id ) {
+    public function handle_household_changed( $cardholder_id,$target_household_id, $old_household_id ) {
         global $wpdb;
 
-        $cardholder_id       = absint( $cardholder_id );
-        $target_household_id = absint( $target_household_id );
+        $cardholder_id       = absint($cardholder_id );
+        $target_household_id = absint($target_household_id );
 
-        if ( ! $cardholder_id || ! $target_household_id ) {
+        if ( ! $cardholder_id || !$target_household_id ) {
             return;
         }
 
+        // Fetch the cardholder's current overall status to use as a fallback
+        $ch_status =$wpdb->get_var( $wpdb->prepare(
+            "SELECT cardholder_status FROM ac_cardholders WHERE id = %d",
+            $cardholder_id
+        ) );
+        $default_status = ( 'active' ===$ch_status ) ? 'active' : 'inactive';
+
         $dk_fields = [ 'DK_DIR_CODE', 'DK_ENTRY_CODE', 'DK_DIR_OPT_IN' ];
 
-        foreach ( $dk_fields as $field_type ) {
-            // 1. Check if another active member in the target household already has this credential
-            $household_val = $wpdb->get_var( $wpdb->prepare(
-                "SELECT cr.credential_value
+        foreach ( $dk_fields as$field_type ) {
+            // 1. Fetch BOTH value and status from an active/existing member in the target household
+            $target_cred =$wpdb->get_row( $wpdb->prepare(
+                "SELECT cr.credential_value, cr.status
                  FROM ac_credentials cr
                  JOIN ac_cardholders c ON cr.cardholder_id = c.id
                  WHERE c.household_id = %d
                    AND c.id != %d
-                   AND c.cardholder_status IN ('active', 'inactive')
+                   AND c.cardholder_status NOT IN ('archived', 'purged')
                    AND cr.credential_type = %s
                    AND cr.credential_value != ''
-                   AND cr.status = 'active'
                  LIMIT 1",
                 $target_household_id,
                 $cardholder_id,
                 $field_type
-            ) );
+            ), ARRAY_A );
 
-            // 2. Determine target value
-            if ( ! empty( $household_val ) ) {
-                $final_value = $household_val;
+            // 2. Determine target value and status
+            if ( ! empty( $target_cred['credential_value'] ) ) {
+                $final_value  =$target_cred['credential_value'];
+                $final_status =$target_cred['status']; // Inherit the actual status of the household's credential
             } else {
-                // Moving into a new household with no codes: generate fresh codes
+                // Moving into a new household with no codes: generate fresh codes and respect cardholder state
+                $final_status =$default_status;
                 if ( 'DK_DIR_OPT_IN' === $field_type ) {
                     $final_value = '0';
                 } else {
-                    $final_value = $this->generate_unique_code( $field_type );
+                    $final_value =$this->generate_unique_code( $field_type );
                 }
             }
 
-            // 3. Update or insert the credential for the moving cardholder
-            $existing_cred_id = $wpdb->get_var( $wpdb->prepare(
+            // 3. Update existing credential or insert a new one
+            $existing_cred_id =$wpdb->get_var( $wpdb->prepare(
                 "SELECT id FROM ac_credentials
                  WHERE cardholder_id = %d
                    AND credential_type = %s
@@ -850,7 +945,7 @@ class FSBHOA_AC_DoorKing {
                     'ac_credentials',
                     [
                         'credential_value' => $final_value,
-                        'status'           => 'active',
+                        'status'           => $final_status,
                     ],
                     [ 'id' => $existing_cred_id ]
                 );
@@ -861,7 +956,7 @@ class FSBHOA_AC_DoorKing {
                         'cardholder_id'    => $cardholder_id,
                         'credential_type'  => $field_type,
                         'credential_value' => $final_value,
-                        'status'           => 'active',
+                        'status'           => $final_status,
                         'issue_date'       => current_time( 'Y-m-d' ),
                     ]
                 );
