@@ -7,6 +7,16 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 class Fsbhoa_DoorKing_Export {
+    // File names must match ram_automation/DK_Sync.ahk (CsvFile / FlagFile).
+    // Each environment gets its own folder: To_RAM_Testbed, To_RAM_Production.
+    const SYNC_BASE_DIR  = '/mnt/shared/Automation/DoorKing';
+    const CSV_FILE_NAME  = 'updates.csv';
+    const FLAG_FILE_NAME = 'import_now.flag';
+    const ENVIRONMENTS   = [ 'testbed', 'production' ];
+
+    // DoorKing 1838-010 Rev AB card memory limit
+    const MAX_CARDS = 3000;
+
     private $global_devices = [];
     private $global_pins    = [];
     private $global_names   = [];
@@ -18,6 +28,29 @@ class Fsbhoa_DoorKing_Export {
         add_action( 'fsbhoa_dk_daily_midnight_export', [ $this, 'generate_export' ] );
 
         $this->ensure_cron_scheduled();
+    }
+
+    /**
+     * Returns this server's environment from FSBHOA_AC_ENVIRONMENT in wp-config.php,
+     * or '' if it is missing or not recognized. Deliberately not a WP option, so it
+     * cannot travel with a copied database.
+     */
+    public static function get_environment() {
+        $env = defined( 'FSBHOA_AC_ENVIRONMENT' ) ? strtolower( trim( (string) FSBHOA_AC_ENVIRONMENT ) ) : '';
+        return in_array( $env, self::ENVIRONMENTS, true ) ? $env : '';
+    }
+
+    public static function default_sync_dir() {
+        $env = self::get_environment();
+        return self::SYNC_BASE_DIR . '/To_RAM_' . ( $env ? ucfirst( $env ) : 'Unconfigured' );
+    }
+
+    public static function default_csv_path() {
+        return self::default_sync_dir() . '/' . self::CSV_FILE_NAME;
+    }
+
+    public static function default_flag_path() {
+        return self::default_sync_dir() . '/' . self::FLAG_FILE_NAME;
     }
 
     public function ensure_cron_scheduled() {
@@ -47,8 +80,24 @@ class Fsbhoa_DoorKing_Export {
         $this->global_pins    = [];
         $this->global_names   = [];
 
-        $csv_path    = get_option( 'fsbhoa_dk_csv_path', '/mnt/shared/AccessControl/doorking_sync/import.csv' );
-        $lock_path   = get_option( 'fsbhoa_dk_lock_path', '/mnt/shared/AccessControl/doorking_sync/import.lock.csv' );
+        $csv_path    = get_option( 'fsbhoa_dk_csv_path', self::default_csv_path() );
+        $lock_path   = get_option( 'fsbhoa_dk_lock_path', self::default_flag_path() );
+
+        // Environment guard: never write a RAM trigger unless this server knows what it is,
+        // and only into a folder named for that environment.
+        $env = self::get_environment();
+        if ( '' === $env ) {
+            $message = 'DoorKing export aborted: FSBHOA_AC_ENVIRONMENT is not defined in wp-config.php (expected one of: ' . implode( ', ', self::ENVIRONMENTS ) . ').';
+            error_log( $message );
+            return new WP_Error( 'environment_not_set', $message );
+        }
+        foreach ( [ $csv_path, $lock_path ] as $path ) {
+            if ( false === stripos( basename( dirname( $path ) ), $env ) ) {
+                $message = sprintf( 'DoorKing export aborted: %s is not in a folder named for the "%s" environment.', $path, $env );
+                error_log( $message );
+                return new WP_Error( 'environment_path_mismatch', $message );
+            }
+        }
         $raw_sec    = get_option( 'fsbhoa_dk_security_level', '01' );
         $sec_level  = str_pad( ! empty( $raw_sec ) ? $raw_sec : '01', 2, '0', STR_PAD_LEFT );
         $account     = get_option( 'fsbhoa_dk_account_name', 'SOUTH GATES' );
@@ -87,13 +136,24 @@ class Fsbhoa_DoorKing_Export {
 
         fclose( $handle );
 
+        // Refuse to publish an export the controllers cannot hold
+        $card_count = count( $this->global_devices );
+        if ( $card_count > self::MAX_CARDS ) {
+            unlink( $tmp_file );
+            $message = sprintf( 'DoorKing export aborted: %d cards exceeds the controller limit of %d.', $card_count, self::MAX_CARDS );
+            error_log( $message );
+            return new WP_Error( 'card_limit_exceeded', $message );
+        }
+
         // Atomic swap
         if ( ! rename( $tmp_file, $csv_path ) ) {
             return new WP_Error( 'rename_error', 'Failed to replace ' . $csv_path );
         }
 
-        // Drop the trigger lock file for AutoHotKey
-        file_put_contents( $lock_path, time() );
+        // Drop the trigger file for AutoHotKey. DK_Sync.ahk rejects it unless env and host
+        // match the RAM PC's local dk_sync.ini.
+        $host = wp_parse_url( home_url(), PHP_URL_HOST );
+        file_put_contents( $lock_path, "env={$env}\r\nhost={$host}\r\ntime=" . time() . "\r\n" );
 
         return true;
     }

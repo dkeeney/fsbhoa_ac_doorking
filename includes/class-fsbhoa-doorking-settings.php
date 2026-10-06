@@ -62,12 +62,12 @@ class Fsbhoa_DoorKing_Settings {
         register_setting($option_group, 'fsbhoa_dk_account_name', 'sanitize_text_field');
 
         add_settings_field('fsbhoa_dk_csv_path_field', 'CSV Export Path', array($this, 'render_field_callback'), $page_slug, 'fsbhoa_dk_sync_section', [
-            'id' => 'fsbhoa_dk_csv_path', 'type' => 'text', 'default' => '/mnt/shared/AccessControl/doorking_sync/import.csv', 'desc' => 'Absolute file path where the plugin will write the CSV file for RAM.'
+            'id' => 'fsbhoa_dk_csv_path', 'type' => 'text', 'default' => Fsbhoa_DoorKing_Export::default_csv_path(), 'desc' => 'Absolute file path where the plugin will write the CSV file for RAM. Its folder name must contain the environment name (e.g. To_RAM_Testbed).'
         ]);
         register_setting($option_group, 'fsbhoa_dk_csv_path', 'sanitize_text_field');
 
         add_settings_field('fsbhoa_dk_lock_path_field', 'Lock/Trigger File Path', array($this, 'render_field_callback'), $page_slug, 'fsbhoa_dk_sync_section', [
-            'id' => 'fsbhoa_dk_lock_path', 'type' => 'text', 'default' => '/mnt/shared/AccessControl/doorking_sync/import.lock', 'desc' => 'Absolute file path for the trigger file that tells the Windows script to begin importing.'
+            'id' => 'fsbhoa_dk_lock_path', 'type' => 'text', 'default' => Fsbhoa_DoorKing_Export::default_flag_path(), 'desc' => 'Absolute file path for the trigger file that tells the Windows script to begin importing. Must be in the same environment folder as the CSV.'
         ]);
         register_setting($option_group, 'fsbhoa_dk_lock_path', 'sanitize_text_field');
 
@@ -379,6 +379,12 @@ class Fsbhoa_DoorKing_Settings {
         <div class="wrap" id="fsbhoa-doorking-settings-page">
             <h1>DoorKing Integration Settings</h1>
             <p>Configure the physical gateway parameters and the RAM software synchronization paths.</p>
+            <?php $env = Fsbhoa_DoorKing_Export::get_environment(); ?>
+            <?php if ( $env ) : ?>
+                <div class="notice notice-info inline"><p><strong>Environment:</strong> <?php echo esc_html( $env ); ?> (from <code>FSBHOA_AC_ENVIRONMENT</code> in wp-config.php)</p></div>
+            <?php else : ?>
+                <div class="notice notice-error inline"><p><strong>Environment not set.</strong> Add <code>define( 'FSBHOA_AC_ENVIRONMENT', 'testbed' );</code> (or <code>'production'</code>) to wp-config.php. RAM exports are disabled until it is set.</p></div>
+            <?php endif; ?>
             <hr>
             <?php do_settings_sections( 'fsbhoa_doorking_settings' ); ?>
             <p class="submit" style="display: flex; gap: 12px; align-items: center;">

@@ -188,6 +188,13 @@ class Fsbhoa_DoorKing_Rotation {
             return;
         }
 
+        // Environment guard: the receiver must be able to tell testbed codes from production codes
+        $env = Fsbhoa_DoorKing_Export::get_environment();
+        if ( '' === $env ) {
+            error_log( 'DoorKing Rotation Sync aborted: FSBHOA_AC_ENVIRONMENT is not defined in wp-config.php.' );
+            return;
+        }
+
         $token       = get_option( 'fsbhoa_dk_rotation_api_token', '' );
         $days_before = absint( get_option( 'fsbhoa_dk_grace_before', 2 ) );
         $days_after  = absint( get_option( 'fsbhoa_dk_grace_after', 3 ) );
@@ -199,6 +206,8 @@ class Fsbhoa_DoorKing_Rotation {
             'next_month_code'      => (string) $next_code,
             'days_before'          => $days_before,
             'days_after'           => $days_after,
+            'environment'          => $env,
+            'source_host'          => wp_parse_url( home_url(), PHP_URL_HOST ),
         ];
 
         $headers = [ 'Content-Type' => 'application/json' ];

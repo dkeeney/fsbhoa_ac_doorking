@@ -1,0 +1,17 @@
+; Local config for DK_Sync.ahk. Copy to C:\FSBHOA\dk_sync.ini on the RAM PC.
+; Keep this file on the PC's LOCAL disk, never on the NAS.
+; Values must be bare (IniRead does not strip inline comments).
+;
+; Environment  : testbed | production. Selects the watch folder To_RAM_Testbed / To_RAM_Production
+;                and must match env= in the trigger file.
+; ExpectedHost : host name of the Access Control server allowed to trigger this PC
+;                (testbed.fsbhoa.com or the production host). Must match host= in the trigger file.
+; BaseDir      : NAS folder as mapped on this PC.
+; GateRowsY    : comma-separated y-coordinates of the gate rows to select in RAM's
+;                Action > Send Data Now dialog. Production: 122,142 (North Gates, South Gates).
+
+[DK_Sync]
+Environment=testbed
+ExpectedHost=testbed.fsbhoa.com
+BaseDir=Y:\Automation\DoorKing
+GateRowsY=122
