@@ -36,11 +36,7 @@ The script drives RAM's GUI with hard-coded screen coordinates, so changes to RA
 
 ## Environment separation
 
-Testbed and production share the NAS, so a testbed test must never reach the production RAM or controllers, and vice versa.
-
-- **`FSBHOA_AC_ENVIRONMENT`** is defined in each server's `wp-config.php` as `'testbed'` or `'production'`. It is deliberately not a WordPress option: it stays with the server, never with a database copy. It is meant for the whole Access Control system, not just this plugin.
-- Other settings stay in the FSBHOA AC dashboard settings (WordPress options). This is safe because refreshing the testbed copies only the `ac_*` tables from production, never `wp_options`.
-- Any code that could affect real hardware or outside systems must check the environment first and **fail closed**: do nothing if the constant is missing or unrecognized.
+The system-wide rules (`FSBHOA_AC_ENVIRONMENT`, fail closed) are in `ARCHITECTURE.md`. This plugin applies them as follows.
 
 DoorKing RAM sync layers, all of which must agree before RAM is touched:
 1. **Plugin:** the export refuses to run if `FSBHOA_AC_ENVIRONMENT` is missing, or if the CSV or trigger folder name doesn't contain the environment name. The DoorKing settings page shows the current environment.
@@ -85,11 +81,7 @@ Develop and test against the testbed controller only; never send commands to the
 
 ## To do before the production release
 
-- **Migration script to set `FSBHOA_AC_ENVIRONMENT` on production.** Production's `wp-config.php` must get `define( 'FSBHOA_AC_ENVIRONMENT', 'production' );` as part of deployment, not by hand.
-  - The constant is system-wide, so the script belongs with the deployment tooling (`~/deploy-production.sh` or `fsbhoa_ac_core`), not in this plugin.
-  - It must be idempotent: add the constant only if it's missing, and never overwrite an existing value.
-  - It must refuse to run on the testbed.
-  - Until the constant is set, production DoorKing exports and vendor-code posts fail closed. That's safe, but they won't work.
+- `FSBHOA_AC_ENVIRONMENT` must be set on production first. The migration script for that is tracked in `ARCHITECTURE.md`.
 - Add `fsbhoa_ac_doorking` to `~/deploy-production.sh`. It currently deploys only core, kiosk, zebra and uhppote.
 - Set production's DoorKing settings to the `To_RAM_Production` paths.
 - Give the office RAM PC its local `C:\FSBHOA\dk_sync.ini` (`Environment=production`, `GateRowsY=122,142`).
