@@ -19,6 +19,7 @@ type Config struct {
 	GateIP         string `json:"gate_ip"`
 	ControllerName string `json:"controller_name"`
 	WordPressHost  string `json:"wordpress_host"` // e.g., "access.fsbhoa.com"
+	APIKey         string `json:"api_key"`        // Access Verification API Key, sent as X-API-KEY
 }
 
 // LogPayload represents the JSON sent to the WordPress REST API
@@ -179,6 +180,7 @@ func logEventToWordPress(cardNumber int, config Config) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-KEY", config.APIKey) // /monitor/log-event requires the Access Verification API Key
 
 	// Send the request
 	client := &http.Client{Timeout: 5 * time.Second}

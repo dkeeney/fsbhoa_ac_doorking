@@ -427,7 +427,8 @@ class Fsbhoa_DoorKing_Settings {
             'listen_port'     => ':' . absint( get_option( 'fsbhoa_dk_proxy_port', 8084 ) ),
             'gate_ip'         => sanitize_text_field( get_option( 'fsbhoa_dk_gate_ip', '192.168.1.50:10001' ) ),
             'controller_name' => sanitize_text_field( get_option( 'fsbhoa_dk_controller_name', 'DoorKing Main Gate' ) ),
-            'wordpress_host'  => $wp_host
+            'wordpress_host'  => $wp_host,
+            'api_key'         => get_option( 'fsbhoa_ac_verify_api_key', '' ), // Access Verification API Key (core General settings), for /monitor/log-event
         ];
 
         $json_data = json_encode( $config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );
