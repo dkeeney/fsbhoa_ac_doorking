@@ -173,7 +173,8 @@ class Fsbhoa_DoorKing_Vendor_Importer {
     }
 
     /**
-     * Checks inactive list to set active vs inactive.
+     * Checks inactive list to set active vs inactive. This is the credential status; a vendor on
+     * the list is not current, so the cardholder is purged (vendors are never archived).
      */
     private function determine_initial_status( $clean_company ) {
         foreach ( $this->inactive_vendors as $inactive_name ) {
@@ -263,7 +264,7 @@ class Fsbhoa_DoorKing_Vendor_Importer {
         if ( $this->is_dry_run ) {
             $status_label = $existing ? "[EXISTING VENDOR (ID: {$existing->id})]" : "[NEW VENDOR]";
             if ( 'inactive' === $initial_status ) {
-                $status_label .= ' [MARKED INACTIVE]';
+                $status_label .= ' [MARKED PURGED]';
             }
             $this->dry_run_log[] = "{$status_label} Company: '{$clean_company}' | Category: {$category}";
             $cardholder_id = 'DRY_RUN_' . sanitize_title( $clean_company );
@@ -276,7 +277,7 @@ class Fsbhoa_DoorKing_Vendor_Importer {
                         'company'           => $clean_company,
                         'cardholder_type'   => 'vendor',
                         'resident_type'     => $category,
-                        'cardholder_status' => ( 'purged' === $existing->cardholder_status ) ? 'active' : $existing->cardholder_status,
+                        'cardholder_status' => ( 'inactive' === $initial_status ) ? 'purged' : ( ( 'purged' === $existing->cardholder_status ) ? 'active' : $existing->cardholder_status ),
                         'updated_at'        => current_time( 'mysql' ),
                     ],
                     [ 'id' => $cardholder_id ]
@@ -288,7 +289,7 @@ class Fsbhoa_DoorKing_Vendor_Importer {
                     'company'           => $clean_company,
                     'cardholder_type'   => 'vendor',
                     'resident_type'     => $category,
-                    'cardholder_status' => $initial_status,
+                    'cardholder_status' => ( 'inactive' === $initial_status ) ? 'purged' : 'active',
                     'created_at'        => current_time( 'mysql' ),
                     'updated_at'        => current_time( 'mysql' ),
                 ] );

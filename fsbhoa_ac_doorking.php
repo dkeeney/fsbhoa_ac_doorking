@@ -559,6 +559,7 @@ class FSBHOA_AC_DoorKing {
                 "SELECT 1 FROM ac_credentials cr
                  JOIN ac_cardholders c ON cr.cardholder_id = c.id
                  WHERE c.household_id = %d
+                   AND c.cardholder_status = 'active'
                    AND cr.credential_type = 'DK_ENTRY_CODE'
                    AND cr.credential_value != ''
                    AND cr.status = 'active'
@@ -712,6 +713,7 @@ class FSBHOA_AC_DoorKing {
                      JOIN ac_cardholders c ON cr.cardholder_id = c.id
                      WHERE c.household_id = %d
                        AND c.id != %d
+                       AND c.cardholder_status = 'active'
                        AND cr.credential_type = %s
                        AND cr.credential_value != ''
                        AND cr.status = 'active'

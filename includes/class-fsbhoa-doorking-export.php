@@ -209,6 +209,7 @@ class Fsbhoa_DoorKing_Export {
                     SELECT cr.credential_type, cr.credential_value
                     FROM ac_credentials cr
                     JOIN ac_vehicles v ON cr.vehicle_id = v.vehicle_id
+                    JOIN ac_cardholders c ON c.id = cr.cardholder_id AND c.cardholder_status = 'active'
                     WHERE v.household_id = %d
                       AND cr.status IN ('active', 'valid')
                     ORDER BY cr.id ASC
