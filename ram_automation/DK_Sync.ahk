@@ -46,12 +46,14 @@ if (Environment != "testbed" && Environment != "production") {
 ; checks every 10 seconds whether RAM is streaming (the URL lists the RAM accounts seen on
 ; open connections, one per line; empty means none is open). When it isn't, the script
 ; restarts RAM (File > Exit, Cancel the backup question, start it again): RAM opens the
-; stream when it starts, for all its accounts. It does this only when nobody has used the
-; PC for 2 minutes and no RAM dialog is open, and at most once every 10 minutes. (Changing
+; stream when it starts, for all its accounts. Nobody should be working in RAM at the
+; console, so it doesn't wait for the PC to be idle (StreamIdleSeconds in dk_sync.ini can
+; ask it to), but it skips the restart while a RAM dialog is open, and restarts at most
+; once every 10 minutes. (Changing
 ; an account's Live Streaming settings made RAM reconnect at first, then stopped working.)
 ; See fsbhoa_ac_vehicle's CLAUDE.md, "RAM reconnect". StreamStatusUrl missing: the watch is off.
 global StreamStatusUrl := Trim(IniRead(IniFile, "DK_Sync", "StreamStatusUrl", ""))
-global StreamIdleMs   := 120000   ; only when nobody has used the PC for 2 minutes
+global StreamIdleMs   := 1000 * Integer("0" . Trim(IniRead(IniFile, "DK_Sync", "StreamIdleSeconds", "0")))
 global StreamRetryMs  := 600000   ; at most one restart every 10 minutes
 global StreamLastTry  := 0        ; A_TickCount of the last restart; 0: none since the stream was up
 global StreamStatusOk := true     ; so an unreachable URL is logged once, not every check
@@ -123,6 +125,9 @@ HandleTrigger() {
     } catch Error as err {
         WriteLog("ERROR: " . err.Message)
     }
+    ; Minimize RAM after a failed run too (a successful one already has)
+    if WinExist(RamWinTitle)
+        WinMinimize(RamWinTitle)
 
     ; Cleanup
     if FileExist(FlagFile)
@@ -334,6 +339,7 @@ RunAutomation() {
     ; --- 8. CONFIGURE SEND DATA ---
     if !WinWaitActive("ahk_class #32770", , 5)
         throw Error("Send Data dialog did not appear.")
+    sendDlg := "ahk_id " . WinExist("A")
         
     WriteLog("Selecting gates for transmission.")
     
@@ -359,28 +365,76 @@ RunAutomation() {
     ControlSend("{Space}", "Button1", "A")
 
     ; --- 9. WAIT FOR NETWORK SEND ---
+    ; First the Send Data dialog closes. (Waiting for "any active dialog" here used to return
+    ; at once, on the Send Data dialog itself, so RAM was minimized mid-send and the real
+    ; completion dialog was left open.)
+    if !WinWaitClose(sendDlg, , 30)
+        throw Error("Send Data dialog did not close after OK.")
     WriteLog("Data is transmitting to gates. Waiting for completion...")
-    if WinWaitActive("ahk_class #32770", , 300) {
-        WriteLog("Transmission complete. Closing status dialog.")
-        Sleep(3000) ; Give the window a full second to settle
-        
-        ; 1. Try targeting Button2 directly
-        try {
-            ControlFocus("Button2", "A")
-            Sleep(2000)
-            ControlSend("{Space}", "Button2", "A")
+
+    ; Then RAM shows a status window ("Cancel Session", "Close", and a list with one row per
+    ; account and its Status, such as "Succeeded"). The rows aren't window text, so the
+    ; session is followed by its "Cancel Session" button: greyed out before the session starts,
+    ; enabled while it runs, greyed out again when it is over. A session can take under a
+    ; second, so check 4 times a second; if it is never seen running within 30 seconds, take
+    ; it as having been too quick to see.
+    statusDlg := ""
+    started := false
+    startBy := A_TickCount + 30000
+    deadline := A_TickCount + 300000
+    loop {
+        if (A_TickCount >= deadline)
+            throw Error("Timed out waiting for the Send Data session to finish.")
+        if (hwnd := WinExist("ahk_class #32770 ahk_exe DoorKing32.exe", "Cancel Session")) {
+            statusDlg := "ahk_id " . hwnd
+            running := false
+            try {
+                cancelBtn := FindButton("Cancel Session", statusDlg)
+                running := (cancelBtn != "" && ControlGetEnabled(cancelBtn, statusDlg))
+            }
+            if running
+                started := true
+            else if started
+                break   ; it ran, and is over
+            else if (A_TickCount >= startBy) {
+                WriteLog("Send session never seen running; it may have been too quick to see.")
+                break
+            }
         }
-        Sleep(500)
-        
-        ; 2. If the box is STILL open, forcefully kill it by closing the window
-        if WinExist("ahk_class #32770 ahk_exe DoorKing32.exe") {
-            WriteLog("Enter key missed. Force-closing the status window.")
-            WinClose("ahk_class #32770 ahk_exe DoorKing32.exe")
-            Sleep(500)
-        }
-    } else {
-        throw Error("Timed out waiting for Network Send completion dialog.")
+        Sleep(250)
     }
+    if (statusDlg = "")
+        throw Error("The Send Data status window never appeared.")
+    Sleep(1000)
+
+    ; Log each account's row. The list is RAM's own control (TBDMyListBox); if it doesn't
+    ; answer like a standard list box, say so and go on.
+    rows := []
+    for ctl in WinGetControls(statusDlg) {
+        if InStr(ctl, "TBDMyListBox") {
+            try rows := ControlGetItems(ctl, statusDlg)
+        }
+    }
+    failed := false
+    if (rows.Length = 0)
+        WriteLog("Send finished. (The status list couldn't be read; check RAM's events.log for the result.)")
+    for row in rows {
+        WriteLog("Send status: " . row)
+        if RegExMatch(row, "i)fail|unsuccess")
+            failed := true
+    }
+
+    closeBtn := FindButton("Close", statusDlg)
+    if (closeBtn != "")
+        ControlClick(closeBtn, statusDlg)
+    Sleep(1000)
+    if WinExist(statusDlg) {
+        WriteLog("Close button missed. Closing the status window.")
+        WinClose(statusDlg)
+        Sleep(500)
+    }
+    if failed
+        throw Error("Send Data failed for at least one account (see the status lines above).")
 
     ; --- 10. CLEANUP & MINIMIZE ---
     WriteLog("Automation successful. Minimizing DoorKing RAM.")
@@ -424,8 +478,8 @@ CheckStreams() {
 
     if StreamLastTry && (A_TickCount - StreamLastTry < StreamRetryMs)
         return
-    ; Closing RAM waits until nobody is using the PC. Starting a RAM that isn't running
-    ; interrupts no one's work in it, so that doesn't wait.
+    ; Optionally (StreamIdleSeconds), close RAM only when nobody has used the PC for a while.
+    ; Starting a RAM that isn't running interrupts no one's work in it, so that never waits.
     if WinExist(RamWinTitle) && (A_TimeIdlePhysical < StreamIdleMs)
         return   ; someone is using the PC; try at a later check
     if WinExist("ahk_class #32770 ahk_exe DoorKing32.exe")
@@ -451,7 +505,6 @@ RestartRam() {
         throw Error("RAM's program path isn't known (set RamPath in dk_sync.ini, or start RAM by hand once).")
 
     if WinExist(RamWinTitle) {
-        wasMinimized := (WinGetMinMax(RamWinTitle) = -1)
         MenuSelect(RamWinTitle, , "File", "Exit")
 
         ; RAM offers to make a backup, asking for a folder (a "Folder:" box, Browse..., OK,
@@ -472,7 +525,6 @@ RestartRam() {
             throw Error("RAM didn't close within 30 seconds.")
         Sleep(3000)
     } else {
-        wasMinimized := true
         WriteLog("Stream watch: RAM wasn't running. Starting it.")
     }
 
@@ -481,8 +533,20 @@ RestartRam() {
     if !WinWait(RamWinTitle, , 60)
         throw Error("RAM didn't start within 60 seconds.")
     Sleep(5000)
-    if wasMinimized
-        WinMinimize(RamWinTitle)
+    WinMinimize(RamWinTitle)   ; nobody works in RAM at the console; keep it out of the way
+}
+
+; Returns the ClassNN of the button in win whose text is text ("&" shortcuts ignored), or "".
+FindButton(text, win) {
+    for ctl in WinGetControls(win) {
+        if !InStr(ctl, "Button")
+            continue
+        try {
+            if (StrReplace(ControlGetText(ctl, win), "&") = text)
+                return ctl
+        }
+    }
+    return ""
 }
 
 WriteLog(Message) {
