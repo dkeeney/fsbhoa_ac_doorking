@@ -9,9 +9,16 @@
 ; BaseDir      : NAS folder as mapped on this PC.
 ; GateRowsY    : comma-separated y-coordinates of the gate rows to select in RAM's
 ;                Action > Send Data Now dialog. Production: 122,142 (North Gates, South Gates).
+;
+; Optional, for the vehicle plugin's RAM Live Streaming (leave StreamStatusUrl out to turn it off):
+; StreamStatusUrl : vehicle_service's /ram-status on the Access Control server, e.g.
+;                   http://192.168.42.62:8088/ram-status (testbed). Empty means RAM isn't
+;                   streaming to it; the script then restarts RAM, which reconnects.
+; RamPath         : full path of DoorKing32.exe. Optional: the script notes it while RAM runs.
 
 [DK_Sync]
 Environment=testbed
 ExpectedHost=testbed.fsbhoa.com
 BaseDir=Y:\Automation\DoorKing
 GateRowsY=122
+;StreamStatusUrl=http://192.168.42.62:8088/ram-status

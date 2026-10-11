@@ -40,6 +40,27 @@ if (Environment != "testbed" && Environment != "production") {
     ExitApp
 }
 
+; --- RAM LIVE STREAM WATCH (optional) ---
+; The vehicle plugin's vehicle_service receives RAM's Live Streaming output, but RAM doesn't
+; reconnect a dropped stream by itself. When dk_sync.ini sets StreamStatusUrl, the script
+; checks every 10 seconds whether RAM is streaming (the URL lists the RAM accounts seen on
+; open connections, one per line; empty means none is open). When it isn't, the script
+; restarts RAM (File > Exit, Cancel the backup question, start it again): RAM opens the
+; stream when it starts, for all its accounts. It does this only when nobody has used the
+; PC for 2 minutes and no RAM dialog is open, and at most once every 10 minutes. (Changing
+; an account's Live Streaming settings made RAM reconnect at first, then stopped working.)
+; See fsbhoa_ac_vehicle's CLAUDE.md, "RAM reconnect". StreamStatusUrl missing: the watch is off.
+global StreamStatusUrl := Trim(IniRead(IniFile, "DK_Sync", "StreamStatusUrl", ""))
+global StreamIdleMs   := 120000   ; only when nobody has used the PC for 2 minutes
+global StreamRetryMs  := 600000   ; at most one restart every 10 minutes
+global StreamLastTry  := 0        ; A_TickCount of the last restart; 0: none since the stream was up
+global StreamStatusOk := true     ; so an unreachable URL is logged once, not every check
+; DoorKing32.exe's path, to start RAM again: from dk_sync.ini (RamPath), else noted while RAM runs
+global RamPath        := Trim(IniRead(IniFile, "DK_Sync", "RamPath", ""))
+
+; Only one task drives RAM at a time: an import or a stream reconnect
+global Busy := false
+
 ; --- CONFIGURATION ---
 global WatchDir    := BaseDir . "\To_RAM_" . StrTitle(Environment)
 global LogDir      := BaseDir . "\Logs"
@@ -57,10 +78,23 @@ if !DirExist(LogDir)
 WriteLog("AHK Sync Script Started (" . Environment . ", accepting triggers from " . ExpectedHost . "). Watching " . WatchDir)
 SetTimer(WatchFolder, 3000)
 
-WatchFolder() {
-    if !FileExist(FlagFile)
-        return
+if (StreamStatusUrl != "") {
+    WriteLog("Stream watch on: status from " . StreamStatusUrl)
+    SetTimer(CheckStreams, 10000)
+}
 
+WatchFolder() {
+    global Busy
+    if !FileExist(FlagFile) || Busy
+        return
+    Busy := true
+    try
+        HandleTrigger()
+    finally
+        Busy := false
+}
+
+HandleTrigger() {
     SetTimer(WatchFolder, 0)
 
     ; --- ENVIRONMENT GUARD ---
@@ -353,6 +387,104 @@ RunAutomation() {
     Sleep(1000) ; Give the UI a second to settle after closing the dialog
     WinMinimize(RamWinTitle)
 }
+
+; --- RAM LIVE STREAM WATCH ---
+CheckStreams() {
+    global Busy, StreamStatusOk, StreamLastTry, RamPath
+    if Busy
+        return
+    if WinExist(RamWinTitle)
+        RamPath := WinGetProcessPath(RamWinTitle)
+
+    try {
+        req := ComObject("WinHttp.WinHttpRequest.5.1")
+        req.SetTimeouts(3000, 3000, 3000, 5000)
+        req.Open("GET", StreamStatusUrl, false)
+        req.Send()
+        if (req.Status != 200)
+            throw Error("HTTP " . req.Status)
+        body := Trim(req.ResponseText, " `t`r`n")
+    } catch Error as err {
+        ; vehicle_service is down or unreachable: RAM couldn't connect anyway
+        if StreamStatusOk
+            WriteLog("Stream watch: can't read " . StreamStatusUrl . " (" . err.Message . "). Waiting for it to answer.")
+        StreamStatusOk := false
+        return
+    }
+    if !StreamStatusOk
+        WriteLog("Stream watch: " . StreamStatusUrl . " answers again.")
+    StreamStatusOk := true
+
+    if (body != "") {
+        if StreamLastTry
+            WriteLog("Stream watch: RAM is streaming again (" . StrReplace(RegExReplace(body, "\t[^\r\n]*"), "`r`n", ", ") . ").")
+        StreamLastTry := 0
+        return
+    }
+
+    if StreamLastTry && (A_TickCount - StreamLastTry < StreamRetryMs)
+        return
+    ; Closing RAM waits until nobody is using the PC. Starting a RAM that isn't running
+    ; interrupts no one's work in it, so that doesn't wait.
+    if WinExist(RamWinTitle) && (A_TimeIdlePhysical < StreamIdleMs)
+        return   ; someone is using the PC; try at a later check
+    if WinExist("ahk_class #32770 ahk_exe DoorKing32.exe")
+        return   ; a RAM dialog is open: someone is working in RAM, or a dialog is stuck
+
+    StreamLastTry := A_TickCount
+    Busy := true
+    try {
+        WriteLog("Stream watch: RAM isn't streaming. Restarting RAM.")
+        RestartRam()
+        WriteLog("Stream watch: RAM restarted.")
+    } catch Error as err {
+        WriteLog("Stream watch ERROR: " . err.Message)
+    } finally {
+        Busy := false
+    }
+}
+
+; Closes RAM (File > Exit, Cancel the backup question) and starts it again. A RAM that isn't
+; running is just started.
+RestartRam() {
+    if (RamPath = "")
+        throw Error("RAM's program path isn't known (set RamPath in dk_sync.ini, or start RAM by hand once).")
+
+    if WinExist(RamWinTitle) {
+        wasMinimized := (WinGetMinMax(RamWinTitle) = -1)
+        MenuSelect(RamWinTitle, , "File", "Exit")
+
+        ; RAM offers to make a backup, asking for a folder (a "Folder:" box, Browse..., OK,
+        ; Cancel): Cancel (no backup), and it closes
+        dlg := "ahk_class #32770 ahk_exe DoorKing32.exe"
+        if WinWait(dlg, , 10) {
+            title := WinGetTitle(dlg)
+            text := WinGetText(dlg)
+            if !(RegExMatch(title . " " . text, "i)back ?up") || (InStr(text, "Folder:") && InStr(text, "Browse"))) {
+                ; Not the question we expect (unsaved changes?): Cancel, which keeps RAM open
+                ControlClick("Cancel", dlg)
+                throw Error("RAM asked something else on exit, answered Cancel: '" . title . "': " . StrReplace(text, "`r`n", " | "))
+            }
+            Sleep(500)
+            ControlClick("Cancel", dlg)
+        }
+        if ProcessWaitClose("DoorKing32.exe", 30)   ; returns 0 once closed, else the PID
+            throw Error("RAM didn't close within 30 seconds.")
+        Sleep(3000)
+    } else {
+        wasMinimized := true
+        WriteLog("Stream watch: RAM wasn't running. Starting it.")
+    }
+
+    SplitPath(RamPath, , &dir)
+    Run('"' . RamPath . '"', dir)
+    if !WinWait(RamWinTitle, , 60)
+        throw Error("RAM didn't start within 60 seconds.")
+    Sleep(5000)
+    if wasMinimized
+        WinMinimize(RamWinTitle)
+}
+
 WriteLog(Message) {
     timestamp := FormatTime(, "yyyy-MM-dd HH:mm:ss")
     FileAppend("[" . timestamp . "] " . Message . "`n", LogFile)

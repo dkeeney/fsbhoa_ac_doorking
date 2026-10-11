@@ -26,13 +26,13 @@ Implications:
 
 ### RAM automation scripts (`ram_automation/`)
 
-- `DK_Sync.ahk` — the AutoHotKey v2 watcher described above.
+- `DK_Sync.ahk` — the AutoHotKey v2 watcher described above. It also keeps RAM's Live Streaming output connected for the `fsbhoa_ac_vehicle` plugin, when the RAM PC's `dk_sync.ini` sets `StreamStatusUrl`. RAM doesn't reconnect a dropped stream by itself, but it opens the stream when it starts. So every 10 seconds the script reads `vehicle_service`'s `/ram-status`, and when no connection is open it restarts RAM: File → Exit (chosen through the menu, not by position), Cancel the backup folder question, start `DoorKing32.exe` again (its path is noted while RAM runs, or set as `RamPath` in `dk_sync.ini`). It only closes RAM when the PC has been idle for 2 minutes and no RAM dialog is open (a RAM that isn't running is started at once), and at most once every 10 minutes. If RAM asks anything other than the backup question on exit, the script answers Cancel, which keeps RAM open, and logs the question. The script is the only thing that drives RAM's window, so imports and restarts share a `Busy` flag and never overlap. The two plugins don't depend on each other: the vehicle plugin relies only on this documented behavior, and works without it (the stream then stays down until RAM's next job). The vehicle side is described in `fsbhoa_ac_vehicle`'s CLAUDE.md, "RAM reconnect".
 - `dk_sync.ini.example` — template for the RAM PC's local `C:\FSBHOA\dk_sync.ini`.
 - `run.bat` — a manual test helper: `run.bat <testbed|production> <host>`. It clears that environment's log, renames an `updates*.csv` to `updates.csv`, and creates a trigger file with the given env and host.
 
 This repo is the **master copy**. Edit the scripts here, then deploy them to `Y:\Automation\DoorKing\` on the RAM PC. Never edit the NAS copy directly. The scripts use CRLF line endings, which `.gitattributes` preserves.
 
-The script drives RAM's GUI with hard-coded screen coordinates, so changes to RAM's UI or window size can break it. Never commit RAM exports or other resident data files (`export.csv`, `*DKEXPORT*.CSV`, `updates_processed_*.csv`).
+The import drives RAM's GUI with hard-coded screen coordinates, so changes to RAM's UI or window size can break it. The stream restart uses RAM's menu and button text instead. Never commit RAM exports or other resident data files (`export.csv`, `*DKEXPORT*.CSV`, `updates_processed_*.csv`).
 
 ## Environment separation
 
