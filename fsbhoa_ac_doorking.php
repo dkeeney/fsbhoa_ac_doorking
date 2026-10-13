@@ -64,6 +64,7 @@ class FSBHOA_AC_DoorKing {
             return;
         }
 
+        require_once plugin_dir_path( __FILE__ ) . 'includes/fsbhoa-doorking-cron.php';
         require_once plugin_dir_path( __FILE__ ) . 'includes/class-fsbhoa-doorking-settings.php';
         require_once plugin_dir_path( __FILE__ ) . 'includes/class-fsbhoa-doorking-rotation.php';
         new Fsbhoa_DoorKing_Rotation();

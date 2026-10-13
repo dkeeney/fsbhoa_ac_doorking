@@ -53,11 +53,10 @@ class Fsbhoa_DoorKing_Export {
         return self::default_sync_dir() . '/' . self::FLAG_FILE_NAME;
     }
 
+    // Full export every night at 00:05 local time, so RAM matches the database even if a
+    // push was missed. (Until 2026-10-13 this ran at 00:05 UTC, which is 17:05 local.)
     public function ensure_cron_scheduled() {
-        if ( ! wp_next_scheduled( 'fsbhoa_dk_daily_midnight_export' ) ) {
-            $midnight = strtotime( 'tomorrow midnight' ) + ( 5 * MINUTE_IN_SECONDS );
-            wp_schedule_event( $midnight, 'daily', 'fsbhoa_dk_daily_midnight_export' );
-        }
+        fsbhoa_dk_schedule_daily( 'fsbhoa_dk_daily_midnight_export', '00:05' );
     }
 
     public function ajax_manual_export() {

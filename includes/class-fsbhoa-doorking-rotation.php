@@ -9,9 +9,8 @@ class Fsbhoa_DoorKing_Rotation {
     public function __construct() {
         add_action( 'fsbhoa_dk_daily_rotation_check', [ $this, 'run_daily_rotation_cycle' ] );
 
-        if ( ! wp_next_scheduled( 'fsbhoa_dk_daily_rotation_check' ) ) {
-            wp_schedule_event( time(), 'daily', 'fsbhoa_dk_daily_rotation_check' );
-        }
+        // Daily at 00:01 local time, before the nightly RAM export at 00:05
+        fsbhoa_dk_schedule_daily( 'fsbhoa_dk_daily_rotation_check', '00:01' );
 
         add_action( 'wp_ajax_fsbhoa_dk_force_sync', [ $this, 'ajax_force_sync' ] );
     }
