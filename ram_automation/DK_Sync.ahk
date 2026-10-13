@@ -40,27 +40,26 @@ if (Environment != "testbed" && Environment != "production") {
     ExitApp
 }
 
-; --- RAM LIVE STREAM WATCH (optional) ---
-; The vehicle plugin's vehicle_service receives RAM's Live Streaming output, but RAM doesn't
-; reconnect a dropped stream by itself. When dk_sync.ini sets StreamStatusUrl, the script
-; checks every 10 seconds whether RAM is streaming (the URL lists the RAM accounts seen on
-; open connections, one per line; empty means none is open). When it isn't, the script
-; restarts RAM (File > Exit, Cancel the backup question, start it again): RAM opens the
-; stream when it starts, for all its accounts. Nobody should be working in RAM at the
-; console, so it doesn't wait for the PC to be idle (StreamIdleSeconds in dk_sync.ini can
-; ask it to), but it skips the restart while a RAM dialog is open, and restarts at most
-; once every 10 minutes. (Changing
-; an account's Live Streaming settings made RAM reconnect at first, then stopped working.)
-; See fsbhoa_ac_vehicle's CLAUDE.md, "RAM reconnect". StreamStatusUrl missing: the watch is off.
-global StreamStatusUrl := Trim(IniRead(IniFile, "DK_Sync", "StreamStatusUrl", ""))
-global StreamIdleMs   := 1000 * Integer("0" . Trim(IniRead(IniFile, "DK_Sync", "StreamIdleSeconds", "0")))
-global StreamRetryMs  := 600000   ; at most one restart every 10 minutes
-global StreamLastTry  := 0        ; A_TickCount of the last restart; 0: none since the stream was up
-global StreamStatusOk := true     ; so an unreachable URL is logged once, not every check
-; DoorKing32.exe's path, to start RAM again: from dk_sync.ini (RamPath), else noted while RAM runs
+; --- RAM WATCH AND HEARTBEAT (optional) ---
+; The vehicle plugin reads RAM's live transactions from RAM's Live Streaming Disk File
+; (BaseDir\Live_<Environment>\stream.txt), so RAM must be running. When dk_sync.ini sets
+; RamWatch=1, the script checks every 60 seconds that RAM's window exists, and starts RAM if
+; it doesn't (at most once every 10 minutes, and not during an import). Each check also
+; rewrites the heartbeat file ram_pc_status.txt in that folder (written, host, environment,
+; ram_running), which the vehicle settings page shows, so a quiet stream file can be told
+; apart from a stopped RAM. The file name is a contract with the vehicle plugin. RAM
+; restarts are rare now: swipes in the first seconds after RAM starts reach no output.
+; See fsbhoa_ac_vehicle's CLAUDE.md, "DoorKing records: from RAM's Disk File".
+global RamWatch       := Trim(IniRead(IniFile, "DK_Sync", "RamWatch", "0")) = "1"
+global RamRetryMs     := 600000   ; at most one start every 10 minutes
+global RamLastStart   := 0        ; A_TickCount of the last start; 0: none yet
+global LiveDir        := BaseDir . "\Live_" . StrTitle(Environment)
+global StatusFile     := LiveDir . "\ram_pc_status.txt"
+global StatusFileOk   := true     ; so a failing heartbeat write is logged once, not every check
+; DoorKing32.exe's path, to start RAM: from dk_sync.ini (RamPath), else noted while RAM runs
 global RamPath        := Trim(IniRead(IniFile, "DK_Sync", "RamPath", ""))
 
-; Only one task drives RAM at a time: an import or a stream reconnect
+; Only one task drives RAM at a time: an import or starting RAM
 global Busy := false
 
 ; --- CONFIGURATION ---
@@ -80,9 +79,10 @@ if !DirExist(LogDir)
 WriteLog("AHK Sync Script Started (" . Environment . ", accepting triggers from " . ExpectedHost . "). Watching " . WatchDir)
 SetTimer(WatchFolder, 3000)
 
-if (StreamStatusUrl != "") {
-    WriteLog("Stream watch on: status from " . StreamStatusUrl)
-    SetTimer(CheckStreams, 10000)
+if RamWatch {
+    WriteLog("RAM watch on: heartbeat in " . StatusFile)
+    CheckRam()
+    SetTimer(CheckRam, 60000)
 }
 
 WatchFolder() {
@@ -442,98 +442,63 @@ RunAutomation() {
     WinMinimize(RamWinTitle)
 }
 
-; --- RAM LIVE STREAM WATCH ---
-CheckStreams() {
-    global Busy, StreamStatusOk, StreamLastTry, RamPath
-    if Busy
-        return
-    if WinExist(RamWinTitle)
+; --- RAM WATCH AND HEARTBEAT ---
+CheckRam() {
+    global Busy, RamLastStart, RamPath
+    running := WinExist(RamWinTitle) ? true : false
+    if running
         RamPath := WinGetProcessPath(RamWinTitle)
-
-    try {
-        req := ComObject("WinHttp.WinHttpRequest.5.1")
-        req.SetTimeouts(3000, 3000, 3000, 5000)
-        req.Open("GET", StreamStatusUrl, false)
-        req.Send()
-        if (req.Status != 200)
-            throw Error("HTTP " . req.Status)
-        body := Trim(req.ResponseText, " `t`r`n")
-    } catch Error as err {
-        ; vehicle_service is down or unreachable: RAM couldn't connect anyway
-        if StreamStatusOk
-            WriteLog("Stream watch: can't read " . StreamStatusUrl . " (" . err.Message . "). Waiting for it to answer.")
-        StreamStatusOk := false
+    WriteStatus(running)
+    if running || Busy
         return
-    }
-    if !StreamStatusOk
-        WriteLog("Stream watch: " . StreamStatusUrl . " answers again.")
-    StreamStatusOk := true
-
-    if (body != "") {
-        if StreamLastTry
-            WriteLog("Stream watch: RAM is streaming again (" . StrReplace(RegExReplace(body, "\t[^\r\n]*"), "`r`n", ", ") . ").")
-        StreamLastTry := 0
+    if RamLastStart && (A_TickCount - RamLastStart < RamRetryMs)
         return
-    }
 
-    if StreamLastTry && (A_TickCount - StreamLastTry < StreamRetryMs)
-        return
-    ; Optionally (StreamIdleSeconds), close RAM only when nobody has used the PC for a while.
-    ; Starting a RAM that isn't running interrupts no one's work in it, so that never waits.
-    if WinExist(RamWinTitle) && (A_TimeIdlePhysical < StreamIdleMs)
-        return   ; someone is using the PC; try at a later check
-    if WinExist("ahk_class #32770 ahk_exe DoorKing32.exe")
-        return   ; a RAM dialog is open: someone is working in RAM, or a dialog is stuck
-
-    StreamLastTry := A_TickCount
+    RamLastStart := A_TickCount
     Busy := true
     try {
-        WriteLog("Stream watch: RAM isn't streaming. Restarting RAM.")
-        RestartRam()
-        WriteLog("Stream watch: RAM restarted.")
+        WriteLog("RAM watch: RAM isn't running. Starting it.")
+        StartRam()
+        WriteLog("RAM watch: RAM started.")
+        WriteStatus(true)
     } catch Error as err {
-        WriteLog("Stream watch ERROR: " . err.Message)
+        WriteLog("RAM watch ERROR: " . err.Message)
     } finally {
         Busy := false
     }
 }
 
-; Closes RAM (File > Exit, Cancel the backup question) and starts it again. A RAM that isn't
-; running is just started.
-RestartRam() {
+; Starts RAM and minimizes it once it is up.
+StartRam() {
     if (RamPath = "")
         throw Error("RAM's program path isn't known (set RamPath in dk_sync.ini, or start RAM by hand once).")
-
-    if WinExist(RamWinTitle) {
-        MenuSelect(RamWinTitle, , "File", "Exit")
-
-        ; RAM offers to make a backup, asking for a folder (a "Folder:" box, Browse..., OK,
-        ; Cancel): Cancel (no backup), and it closes
-        dlg := "ahk_class #32770 ahk_exe DoorKing32.exe"
-        if WinWait(dlg, , 10) {
-            title := WinGetTitle(dlg)
-            text := WinGetText(dlg)
-            if !(RegExMatch(title . " " . text, "i)back ?up") || (InStr(text, "Folder:") && InStr(text, "Browse"))) {
-                ; Not the question we expect (unsaved changes?): Cancel, which keeps RAM open
-                ControlClick("Cancel", dlg)
-                throw Error("RAM asked something else on exit, answered Cancel: '" . title . "': " . StrReplace(text, "`r`n", " | "))
-            }
-            Sleep(500)
-            ControlClick("Cancel", dlg)
-        }
-        if ProcessWaitClose("DoorKing32.exe", 30)   ; returns 0 once closed, else the PID
-            throw Error("RAM didn't close within 30 seconds.")
-        Sleep(3000)
-    } else {
-        WriteLog("Stream watch: RAM wasn't running. Starting it.")
-    }
-
     SplitPath(RamPath, , &dir)
     Run('"' . RamPath . '"', dir)
     if !WinWait(RamWinTitle, , 60)
         throw Error("RAM didn't start within 60 seconds.")
     Sleep(5000)
     WinMinimize(RamWinTitle)   ; nobody works in RAM at the console; keep it out of the way
+}
+
+; Rewrites the heartbeat file (key=value lines), through a temp file so the server never
+; reads half of it.
+WriteStatus(running) {
+    global StatusFileOk
+    tmp := StatusFile . ".tmp"
+    try {
+        if FileExist(tmp)
+            FileDelete(tmp)
+        FileAppend("written=" . FormatTime(, "yyyy-MM-dd HH:mm:ss") . "`r`nhost=" . A_ComputerName
+            . "`r`nenvironment=" . Environment . "`r`nram_running=" . (running ? "1" : "0") . "`r`n", tmp)
+        FileMove(tmp, StatusFile, 1)
+        if !StatusFileOk
+            WriteLog("RAM watch: heartbeat written again.")
+        StatusFileOk := true
+    } catch Error as err {
+        if StatusFileOk
+            WriteLog("RAM watch: can't write " . StatusFile . " (" . err.Message . "). Does the folder exist?")
+        StatusFileOk := false
+    }
 }
 
 ; Returns the ClassNN of the button in win whose text is text ("&" shortcuts ignored), or "".

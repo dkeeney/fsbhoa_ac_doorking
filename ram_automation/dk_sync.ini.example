@@ -10,17 +10,16 @@
 ; GateRowsY    : comma-separated y-coordinates of the gate rows to select in RAM's
 ;                Action > Send Data Now dialog. Production: 122,142 (North Gates, South Gates).
 ;
-; Optional, for the vehicle plugin's RAM Live Streaming (leave StreamStatusUrl out to turn it off):
-; StreamStatusUrl : vehicle_service's /ram-status on the Access Control server, e.g.
-;                   http://192.168.42.62:8088/ram-status (testbed). Empty means RAM isn't
-;                   streaming to it; the script then restarts RAM, which reconnects.
+; Optional, for the vehicle plugin, which reads RAM's Live Streaming Disk File
+; (BaseDir\Live_<Environment>\stream.txt):
+; RamWatch        : 1 to check every 60 seconds that RAM is running, start it if not, and write
+;                   the heartbeat ram_pc_status.txt in that folder for the vehicle settings
+;                   page. Default 0 (off).
 ; RamPath         : full path of DoorKing32.exe. Optional: the script notes it while RAM runs.
-; StreamIdleSeconds : optional. Close RAM only when nobody has touched the keyboard or mouse
-;                   for this many seconds (e.g. 120 on a PC someone works at). Default 0.
 
 [DK_Sync]
 Environment=testbed
 ExpectedHost=testbed.fsbhoa.com
 BaseDir=Y:\Automation\DoorKing
 GateRowsY=122
-;StreamStatusUrl=http://192.168.42.62:8088/ram-status
+RamWatch=1
