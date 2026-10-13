@@ -3,9 +3,6 @@ if ( ! defined( 'ABSPATH' ) ) { die; }
 
 class Fsbhoa_DoorKing_Settings {
 
-    // Where to write the config file for the Go Proxy service
-    private $doorking_config_path = '/var/lib/fsbhoa/doorking_proxy.json';
-
     public function __construct() {
         // Hook into Core to register our submenu
         add_action( 'fsbhoa_register_admin_submenus', array( $this, 'add_submenu' ) );
@@ -15,12 +12,6 @@ class Fsbhoa_DoorKing_Settings {
 
         // AJAX handler for saving
         add_action( 'wp_ajax_fsbhoa_save_doorking_settings', array( $this, 'ajax_save_settings' ) );
-
-        // Re-generate config if a user saves settings
-        add_action( 'update_option', array( $this, 'trigger_config_update_on_save' ), 10, 3 );
-
-        // THE CONNECTION HOOK: Listen to Core plugin's broadcast
-        add_action( 'fsbhoa_update_service_configs', array( $this, 'update_service_config' ) );
     }
 
     public function add_submenu( $parent_slug ) {
@@ -182,24 +173,6 @@ class Fsbhoa_DoorKing_Settings {
             ]
         );
         register_setting($option_group, 'fsbhoa_dk_rotation_api_token', 'sanitize_text_field');
-
-        // --- Section: Go Proxy Settings ---
-        add_settings_section('fsbhoa_dk_proxy_section', 'Real-Time Proxy Settings (Go Service)', null, $page_slug);
-
-        add_settings_field('fsbhoa_dk_proxy_port_field', 'Proxy Listen Port', array($this, 'render_field_callback'), $page_slug, 'fsbhoa_dk_proxy_section', [
-            'id' => 'fsbhoa_dk_proxy_port', 'type' => 'number', 'default' => 8084, 'desc' => 'The port the Go proxy listens on. Point your RAM network connection to this port.'
-        ]);
-        register_setting($option_group, 'fsbhoa_dk_proxy_port', 'absint');
-
-        add_settings_field('fsbhoa_dk_gate_ip_field', 'Physical Gate IP & Port', array($this, 'render_field_callback'), $page_slug, 'fsbhoa_dk_proxy_section', [
-            'id' => 'fsbhoa_dk_gate_ip', 'type' => 'text', 'default' => '192.168.1.50:10001', 'desc' => 'The actual IP address and port of the Lantronix adapter at the gate.'
-        ]);
-        register_setting($option_group, 'fsbhoa_dk_gate_ip', 'sanitize_text_field');
-
-        add_settings_field('fsbhoa_dk_controller_name_field', 'Controller Name (Logs)', array($this, 'render_field_callback'), $page_slug, 'fsbhoa_dk_proxy_section', [
-            'id' => 'fsbhoa_dk_controller_name', 'type' => 'text', 'default' => 'DoorKing Gate', 'desc' => 'Identifier injected into the ac_access_log table when a swipe is intercepted.'
-        ]);
-        register_setting($option_group, 'fsbhoa_dk_controller_name', 'sanitize_text_field');
     }
 
     public function render_field_callback( $args ) {
@@ -336,8 +309,6 @@ class Fsbhoa_DoorKing_Settings {
             update_option( 'fsbhoa_dk_enable_rotation', '0' );
         }
 
-        $this->update_service_config();
-
         // -- HANDLE VENDOR ACCESS CODES --
         $rotation_enabled = ( get_option( 'fsbhoa_dk_enable_rotation', '0' ) === '1' );
         $rotation         = new Fsbhoa_DoorKing_Rotation();
@@ -406,37 +377,6 @@ class Fsbhoa_DoorKing_Settings {
                 'nonce'    => wp_create_nonce( 'fsbhoa_dk_settings_nonce' )
             ) );
         }
-    }
-
-    public function trigger_config_update_on_save( $option_name, $old_value, $new_value ) {
-        $dk_options = [
-            'fsbhoa_dk_proxy_port', 'fsbhoa_dk_gate_ip', 'fsbhoa_dk_controller_name'
-        ];
-        if ( in_array( $option_name, $dk_options ) ) {
-            $this->update_service_config();
-        }
-    }
-
-    /**
-     * Generates doorking_proxy.json for the Go Service
-     */
-    public function update_service_config() {
-        $wp_host = get_option( 'fsbhoa_ac_wp_host', 'access.fsbhoa.com' );
-
-        $config = [
-            'listen_port'     => ':' . absint( get_option( 'fsbhoa_dk_proxy_port', 8084 ) ),
-            'gate_ip'         => sanitize_text_field( get_option( 'fsbhoa_dk_gate_ip', '192.168.1.50:10001' ) ),
-            'controller_name' => sanitize_text_field( get_option( 'fsbhoa_dk_controller_name', 'DoorKing Main Gate' ) ),
-            'wordpress_host'  => $wp_host,
-            'api_key'         => get_option( 'fsbhoa_ac_verify_api_key', '' ), // Access Verification API Key (core General settings), for /monitor/log-event
-        ];
-
-        $json_data = json_encode( $config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );
-
-        if ( ! is_dir( dirname( $this->doorking_config_path ) ) ) {
-            mkdir( dirname( $this->doorking_config_path ), 0755, true );
-        }
-        file_put_contents( $this->doorking_config_path, $json_data );
     }
 }
 

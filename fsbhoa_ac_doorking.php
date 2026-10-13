@@ -89,23 +89,12 @@ class FSBHOA_AC_DoorKing {
         add_filter( 'fsbhoa_is_vehicle_row_empty', [ $this, 'dk_vehicle_row_empty_check' ], 10, 2 );
         add_filter( 'fsbhoa_validate_vehicle_row', [ $this, 'dk_validate_vehicle_row' ], 10, 2 );
 
-        // Register the Go service with the Core System Status dashboard
-        add_filter( 'fsbhoa_system_services', [ $this, 'register_system_service' ] );
-
         // Hook into Core's Cardholder List Status Column
         add_action( 'fsbhoa_cardholder_list_status_icons', [ $this, 'render_status_icon' ] );
 
         // Hook for merge and restore.
         add_action( 'fsbhoa_core_cardholders_merged', [ $this, 'handle_cardholder_merge' ], 10, 4 );
         add_action( 'fsbhoa_core_cardholder_restored', [ $this, 'handle_cardholder_restore' ], 10, 1 );
-    }
-
-    /**
-     * Appends the DoorKing Go proxy to the System Status dashboard
-     */
-    public function register_system_service( $services ) {
-        $services['fsbhoa_doorking'] = 'DoorKing Service';
-        return $services;
     }
 
     /**
