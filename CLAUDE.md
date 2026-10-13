@@ -15,7 +15,7 @@ Flow when configuration changes:
 2. It then drops a trigger file, `import_now.flag`, in the same folder. The file contains `env=<environment>` and `host=<site host>`.
 3. `ram_automation/DK_Sync.ahk` on the RAM PC checks for the trigger file every 3 seconds. When it appears and passes the environment check (below), the script clicks through RAM (File → Import → Import Now, with CSV format, Initialize and Multiple Accounts checked) to import `updates.csv`, replacing RAM's current configuration.
 4. The script then clicks through Action → Send Data Now, selects the gate rows listed in its local `dk_sync.ini` (production: **North Gates** and **South Gates**), and sends the data to the controllers.
-5. Cleanup: the script deletes `import_now.flag` and renames `updates.csv` to `updates_processed_<yyyyMMdd_HHmmss>.csv`. It logs to `Y:\Automation\DoorKing\Logs\automation_<environment>.log`.
+5. Cleanup: the script deletes `import_now.flag` and renames `updates.csv` to `updates_processed_<yyyyMMdd_HHmmss>.csv`, for inspecting the import. It first deletes any older `updates_processed_*.csv`, so only the newest is kept: each holds every resident's tags and gate codes, and the NAS copies the folder into its backups. It logs to `Y:\Automation\DoorKing\Logs\automation_<environment>.log`.
 
 Implications:
 - Each export is a **full replacement**, not a delta. The CSV must contain every valid credential, and must stay within the 3000-card controller limit.

@@ -133,8 +133,20 @@ HandleTrigger() {
     if FileExist(FlagFile)
         FileDelete(FlagFile)
         
-    if FileExist(CsvFile)
+    ; Keep the processed CSV for inspecting this import, but only the newest one: each holds
+    ; every resident's tags and gate codes, and the NAS copies this folder into its backups.
+    if FileExist(CsvFile) {
+        removed := 0
+        Loop Files WatchDir . "\updates_processed_*.csv" {
+            try {
+                FileDelete(A_LoopFileFullPath)
+                removed++
+            }
+        }
+        if removed
+            WriteLog("Deleted " . removed . " older updates_processed CSV file(s).")
         FileMove(CsvFile, WatchDir . "\updates_processed_" . FormatTime(, "yyyyMMdd_HHmmss") . ".csv", 1)
+    }
 
     SetTimer(WatchFolder, 3000)
 }
