@@ -5,6 +5,8 @@ class Fsbhoa_DoorKing_Rotation {
 
     const VENDOR_CURRENT_NAME  = 'Vendor (Current)';
     const VENDOR_PREVIOUS_NAME = 'Vendor (Previous)';
+    // Holds next month's code in the gates for the last "Days Before" days of the month
+    const VENDOR_NEXT_NAME     = 'Vendor (Next)';
 
     public function __construct() {
         add_action( 'fsbhoa_dk_daily_rotation_check', [ $this, 'run_daily_rotation_cycle' ] );
@@ -16,7 +18,7 @@ class Fsbhoa_DoorKing_Rotation {
     }
 
     /**
-     * Gets or creates the two community vendor cardholder records.
+     * Gets or creates the three community vendor cardholder records.
      */
     public function get_vendor_record_ids() {
         global $wpdb;
@@ -24,6 +26,7 @@ class Fsbhoa_DoorKing_Rotation {
         $slots = [
             'current'  => self::VENDOR_CURRENT_NAME,
             'previous' => self::VENDOR_PREVIOUS_NAME,
+            'next'     => self::VENDOR_NEXT_NAME,
         ];
 
         $ids = [];
@@ -90,6 +93,9 @@ class Fsbhoa_DoorKing_Rotation {
         $slot_ids      = $this->get_vendor_record_ids();
         $curr_id       = $slot_ids['current'];
         $prev_id       = $slot_ids['previous'];
+        $next_id       = $slot_ids['next'];
+
+        $needs_ram_sync = false;
 
         // Read existing credential from DB first
         $curr_code = $this->get_credential_value( $curr_id );
@@ -103,7 +109,6 @@ class Fsbhoa_DoorKing_Rotation {
         }
 
         $stored_month_key = get_option( 'fsbhoa_dk_current_month_key', '' );
-        $needs_ram_sync   = false;
 
         // -------------------------------------------------------------
         // 1. First-time initialization
@@ -146,20 +151,26 @@ class Fsbhoa_DoorKing_Rotation {
         }
 
         // -------------------------------------------------------------
-        // 4. Mid-Month: Mint Next Month's Code (Day >= 15)
+        // 4. Mid-Month: Mint Next Month's Code (Day >= 15, or earlier if the lead time starts sooner)
         // -------------------------------------------------------------
+        // The last $days_before days of the month (2 = the last two days)
+        $in_lead_time = ( $days_in_month - $day ) < $days_before;
+
         $next_code = get_option( 'fsbhoa_dk_next_month_code', '' );
-        if ( $day >= 15 && empty( $next_code ) ) {
+        if ( ( $day >= 15 || $in_lead_time ) && empty( $next_code ) ) {
             $next_code = $this->generate_unique_pin();
             update_option( 'fsbhoa_dk_next_month_code', $next_code );
         }
 
         // -------------------------------------------------------------
-        // 5. Pre-Grace: Activate Next Code in DoorKing (Days before end)
+        // 5. Pre-Grace: Next month's code also opens the gates during the lead time
         // -------------------------------------------------------------
-        if ( ( $days_in_month - $day ) < $days_before && ! empty( $next_code ) ) {
-            // Check if next code is physically staged in DoorKing
-            // (If using a 2-slot table, Slot B can temporarily hold the upcoming code before the 1st)
+        // The Next slot is active only then. On the 1st its code moves to the Current slot
+        // (step 2) and this turns the Next slot off, so the code is never in RAM twice.
+        if ( $in_lead_time && ! empty( $next_code ) ) {
+            $needs_ram_sync = $this->stage_credential( $next_id, $next_code, 'active' ) || $needs_ram_sync;
+        } else {
+            $needs_ram_sync = $this->deactivate_credential( $next_id ) || $needs_ram_sync;
         }
 
         // -------------------------------------------------------------
@@ -274,6 +285,30 @@ class Fsbhoa_DoorKing_Rotation {
                 'created_at'       => current_time( 'mysql' ),
             ] );
         }
+    }
+
+    /**
+     * Sets a slot's code and status only if they differ, so a daily run that changes nothing
+     * leaves the record (and its issue date) alone. Returns true if it changed anything.
+     */
+    public function stage_credential( $cardholder_id, $code, $status ) {
+        $code = (string) $code;
+        if ( $this->get_credential_value( $cardholder_id ) === $code && $this->get_credential_status( $cardholder_id ) === $status ) {
+            return false;
+        }
+        $this->set_credential( $cardholder_id, $code, $status );
+        return true;
+    }
+
+    /**
+     * Turns a slot's code off if it is active. Returns true if it changed anything.
+     */
+    public function deactivate_credential( $cardholder_id ) {
+        if ( 'active' !== $this->get_credential_status( $cardholder_id ) ) {
+            return false;
+        }
+        $this->set_credential_status( $cardholder_id, 'inactive' );
+        return true;
     }
 
     public function set_credential_status( $cardholder_id, $status ) {

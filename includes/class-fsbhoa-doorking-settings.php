@@ -127,7 +127,7 @@ class Fsbhoa_DoorKing_Settings {
                 'id'      => 'fsbhoa_dk_grace_before',
                 'type'    => 'number',
                 'default' => '2',
-                'desc'    => 'Days before month-end to generate the new code and publish it to the website (both codes valid).',
+                'desc'    => 'Days at the end of the month when next month\'s code also opens the gates (2 = the last two days). Both codes work then. The website gets the next code from the 15th.',
             ]
         );
         register_setting( $option_group, 'fsbhoa_dk_grace_before', 'absint' );
@@ -255,6 +255,8 @@ class Fsbhoa_DoorKing_Settings {
         $prev_status = $rotation->get_credential_status( $slot_ids['previous'] );
 
         $next_code   = get_option( 'fsbhoa_dk_next_month_code', '' );
+        // Active during the lead time at the end of the month, when it already opens the gates
+        $next_status = $rotation->get_credential_status( $slot_ids['next'] );
 
         $current_month = current_time( 'F' );
         // "first day of": a plain -1 month from the 31st lands in the same month
@@ -279,7 +281,11 @@ class Fsbhoa_DoorKing_Settings {
                 <tr>
                     <td style="padding: 6px 0;"><strong><?php echo esc_html( $next_month ); ?> (Upcoming)</strong></td>
                     <td style="padding: 6px 0; font-family: monospace; font-size: 15px;"><?php echo esc_html( $next_code ?: 'Staged on the 15th' ); ?></td>
-                    <td style="padding: 6px 0; color: #888;">[PENDING]</td>
+                    <?php if ( 'active' === $next_status ) : ?>
+                        <td style="padding: 6px 0; color: green;">[ACTIVE]</td>
+                    <?php else : ?>
+                        <td style="padding: 6px 0; color: #888;">[PENDING]</td>
+                    <?php endif; ?>
                 </tr>
             </table>
             <p class="description" style="margin-top: 8px;">Codes rotate automatically on the 1st. DoorKing and website stay synchronized.</p>
@@ -336,6 +342,7 @@ class Fsbhoa_DoorKing_Settings {
                 $rotation->set_credential( $slot_ids['current'], $manual_pin, 'active' );
             }
             $rotation->set_credential( $slot_ids['previous'], '', 'inactive' );
+            $rotation->deactivate_credential( $slot_ids['next'] );
             delete_option( 'fsbhoa_dk_next_month_code' );
 
             // 3. Trigger DoorKing RAM export and push single-code payload to the website

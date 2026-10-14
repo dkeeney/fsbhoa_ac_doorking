@@ -139,6 +139,11 @@ class FSBHOA_AC_DoorKing {
     private function generate_unique_code( $type_code ) {
         global $wpdb;
         $blacklist = [ '0000', '1111', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1234', '4321', '2580' ];
+        // Next month's vendor code isn't in ac_credentials until the rotation stages it, and the
+        // export keeps only the first holder of a duplicate gate code (households before vendors)
+        if ( 'DK_ENTRY_CODE' === $type_code ) {
+            $blacklist[] = (string) get_option( 'fsbhoa_dk_next_month_code', '' );
+        }
 
         for ( $attempt = 0; $attempt < 100; $attempt++ ) {
             $candidate = sprintf( '%04d', wp_rand( 100, 9999 ) );
