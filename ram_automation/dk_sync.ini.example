@@ -7,12 +7,12 @@
 ; ExpectedHost : host name of the Access Control server allowed to trigger this PC
 ;                (testbed.fsbhoa.com or the production host). Must match host= in the trigger file.
 ; BaseDir      : NAS folder as mapped on this PC.
-; GateRowsY    : comma-separated y-coordinates of the gate rows to select in RAM's
-;                Action > Send Data Now dialog. Production: 122,142 (North Gates, South Gates).
-; GateAccounts : optional, recommended. The accounts those rows are, comma-separated, as RAM
-;                names them (production: North Gates,South Gates). The rows can only be clicked
-;                by position, so the script checks RAM's completion records against these
-;                names, and fails the push if RAM sent to another account.
+; GateAccounts : optional. The script sends to every account in RAM's Send Data Now list and,
+;                by default, waits for each to report success. If RAM also lists an account
+;                whose panel can't be reached (a test account), name the accounts that must
+;                report here, comma-separated, as RAM names them; the others' results are
+;                then only logged. Not needed in production, where RAM lists only North Gates
+;                and South Gates. (GateRowsY, the rows' screen positions, is no longer used.)
 ;
 ; Optional, for the vehicle plugin, which reads RAM's Live Streaming Disk File
 ; (BaseDir\Live_<Environment>\stream.txt):
@@ -28,6 +28,4 @@
 Environment=testbed
 ExpectedHost=testbed.fsbhoa.com
 BaseDir=Y:\Automation\DoorKing
-GateRowsY=122
-GateAccounts=WORKBENCH
 RamWatch=1

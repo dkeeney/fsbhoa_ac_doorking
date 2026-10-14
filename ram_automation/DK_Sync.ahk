@@ -9,7 +9,6 @@ Persistent
 ;   Environment=testbed
 ;   ExpectedHost=testbed.fsbhoa.com
 ;   BaseDir=Y:\Automation\DoorKing
-;   GateRowsY=122
 ;
 ; See dk_sync.ini.example. IniRead does not strip inline comments, so keep values bare.
 ; The script refuses to start if the file or any key is missing, and rejects any
@@ -33,16 +32,12 @@ if !FileExist(IniFile) {
 global Environment  := StrLower(ReadRequired("Environment"))
 global ExpectedHost := StrLower(ReadRequired("ExpectedHost"))
 global BaseDir      := ReadRequired("BaseDir")
-global GateRowsY    := StrSplit(ReadRequired("GateRowsY"), ",", " ")
-; Optional: the accounts those rows are, in RAM's names. The rows are clicked by position (the
-; list is an ActiveX grid that can't be read), so RAM's completion records are checked against
-; these names: a click on the wrong row then fails the push instead of passing unnoticed.
+; Optional: the accounts that must confirm each send, in RAM's names. Every account in RAM is
+; sent to (TickAllAccounts) and, by default, every one must report success. With GateAccounts
+; set, only these must, and other accounts' results (a test account with no panel) are only
+; logged. Production doesn't need it: RAM lists only North Gates and South Gates.
 global GateAccounts := Trim(IniRead(IniFile, "DK_Sync", "GateAccounts", ""))
 GateAccounts := (GateAccounts = "") ? [] : StrSplit(GateAccounts, ",", " ")
-if (GateAccounts.Length && GateAccounts.Length != GateRowsY.Length) {
-    MsgBox("DK_Sync: GateAccounts lists " . GateAccounts.Length . " accounts but GateRowsY has " . GateRowsY.Length . " rows. The script will exit.", "DK_Sync", "Iconx")
-    ExitApp
-}
 
 if (Environment != "testbed" && Environment != "production") {
     MsgBox("DK_Sync: Environment must be 'testbed' or 'production', not '" . Environment . "'. The script will exit.", "DK_Sync", "Iconx")
@@ -372,23 +367,16 @@ RunAutomation() {
         throw Error("Send Data dialog did not appear.")
     sendDlg := "ahk_id " . WinExist("A")
         
-    WriteLog("Selecting gates for transmission.")
+    WriteLog("Selecting every account for transmission.")
     
-    ControlFocus("Button3", "A") ; Clear Now
+    ControlFocus("Button3", "A") ; Clear All
     Sleep(200)
     ControlSend("{Space}", "Button3", "A")
     Sleep(500)
     
-    ; Gate rows come from dk_sync.ini (production: North Gates 122, South Gates 142)
-    for rowY in GateRowsY {
-        WriteLog("Selecting gate row at y=" . rowY)
-        MouseMove(310, Integer(rowY))
-        Sleep(200)
-        Click("Down")
-        Sleep(100)
-        Click("Up")
-        Sleep(500)
-    }
+    accounts := TickAllAccounts(sendDlg)
+    if (GateAccounts.Length > accounts)
+        throw Error("dk_sync.ini's GateAccounts names " . GateAccounts.Length . " accounts, but RAM's Send Data list has only " . accounts . ".")
     
     ; Note where the Live Streaming file ends, so only records RAM writes after OK count
     streamStart := FileExist(StreamFile) ? FileGetSize(StreamFile) : -1
@@ -402,7 +390,7 @@ RunAutomation() {
     ; First the Send Data dialog closes. (Waiting for "any active dialog" here used to return
     ; at once, on the Send Data dialog itself, so RAM was minimized mid-send and the real
     ; completion dialog was left open.)
-    ; If no gate row got selected (the click at GateRowsY missed), RAM answers OK with a
+    ; If no account got selected (TickAllAccounts checks, so this shouldn't happen), RAM answers OK with a
     ; message ("No account selected. You must choose at least one account to send data.")
     ; instead. Close it and the Send Data dialog, and fail with that.
     closeBy := A_TickCount + 30000
@@ -419,7 +407,7 @@ RunAutomation() {
             Sleep(500)
             if WinExist(sendDlg)
                 WinClose(sendDlg)
-            throw Error("RAM refused to send: " . Trim(text) . " The click on the gate row (GateRowsY in dk_sync.ini) missed. Was someone using the RAM PC's mouse?")
+            throw Error("RAM refused to send: " . Trim(text) . " Was someone using the RAM PC's mouse?")
         }
         if (A_TickCount >= closeBy)
             throw Error("Send Data dialog did not close after OK.")
@@ -431,7 +419,7 @@ RunAutomation() {
     ; window doesn't show when the session ends. RAM's own record in the Live Streaming file
     ; does: one per account sent, when its session ends.
     if (streamStart >= 0) {
-        WaitForSendRecords(streamStart)
+        WaitForSendRecords(streamStart, GateAccounts.Length ? GateAccounts.Length : accounts)
         statusDlg := ""
         if (hwnd := WinExist("ahk_class #32770 ahk_exe DoorKing32.exe", "Cancel Session"))
             statusDlg := "ahk_id " . hwnd
@@ -480,13 +468,13 @@ RunAutomation() {
 }
 
 ; Waits until RAM has written, after the given byte of the Live Streaming file, a record
-; that a Send Data session ended for each gate row: "Download Data" (sent) or "Database is
-; Up To Date" (nothing to send). With GateAccounts set, the records must be from those
+; that a Send Data session ended for `accounts` accounts: "Download Data" (sent) or "Database
+; is Up To Date" (nothing to send). With GateAccounts set, the records must be from those
 ; accounts; a record from another account is logged and doesn't count. "Failed To Connect"
-; for a gate account is an error, and so is no record within SendTimeoutSeconds. The file
+; for a counted account is an error, and so is no record within SendTimeoutSeconds. The file
 ; is in RAW Text: a status record has its account name in columns 1-23, its type (Network
 ; or RS232) at columns 45-57 and its message from column 66.
-WaitForSendRecords(offset) {
+WaitForSendRecords(offset, accounts) {
     done := Map()       ; Map() keys ignore case only with CaseSense off
     done.CaseSense := false
     others := ""        ; accounts that reported but aren't in GateAccounts
@@ -500,7 +488,7 @@ WaitForSendRecords(offset) {
                     missing .= (missing = "" ? "" : ", ") . name
             throw Error("No word from RAM that the send finished (no Download Data or Database is Up To Date record in " . StreamFile . " within " . (SendTimeoutMs // 1000) . " seconds"
                 . (missing != "" ? " for " . missing : "") . ")."
-                . (others != "" ? " RAM reported for " . others . " instead: check GateRowsY in dk_sync.ini." : ""))
+                . (others != "" ? " RAM reported for " . others . " instead: check GateAccounts in dk_sync.ini." : ""))
         }
         Sleep(1000)
         try {
@@ -540,11 +528,92 @@ WaitForSendRecords(offset) {
             if RegExMatch(message, "i)^(Download Data|Database is Up To Date)") {
                 WriteLog("RAM reports for " . account . ": " . message)
                 done[account] := message
-                if (done.Count >= GateRowsY.Length)
+                if (done.Count >= accounts)
                     return
             }
         }
     }
+}
+
+; Ticks the "Snd Now" box of every account in the Send Data dialog, and checks they are all
+; ticked. The list is an ActiveX grid that can't be read (TODO #2), so this goes by its
+; pixels, measured on the workbench PC: the account rows are white, the header and the empty
+; part below them grey; in each row the checkbox is the first dark border to the left of the
+; grid's right edge (the last column is Snd Now), and a ticked box is black in the middle.
+; Clear All must come first, so each click ticks a box. Returns the number of accounts.
+TickAllAccounts(sendDlg) {
+    oldPixel := A_CoordModePixel, oldMouse := A_CoordModeMouse
+    CoordMode("Pixel", "Screen"), CoordMode("Mouse", "Screen")
+    try {
+        WinGetPos(&gx, &gy, &gw, &gh, "ahk_id " . ControlGetHwnd("VSFlexGrid8L1", sendDlg))
+        scanX := gx + gw - 12   ; inside the last column, right of its checkbox
+
+        ; The rows: runs of white at least 8 pixels high. They are next to each other, so 40
+        ; pixels without white after a row is the empty part, and the scan stops there
+        ; (PixelGetColor is slow: the whole grid took 14 seconds).
+        rows := []
+        top := 0
+        lastWhite := 0
+        y := gy + 2
+        while (y < gy + gh - 2) {
+            white := Lum(PixelGetColor(scanX, y)) >= 245
+            if white
+                lastWhite := y
+            if (white && !top)
+                top := y
+            else if (!white && top) {
+                if (y - top >= 8)
+                    rows.Push({cy: (top + y - 1) // 2})
+                top := 0
+            }
+            if (rows.Length && y - lastWhite > 40)
+                break
+            y += 1
+        }
+        if !rows.Length
+            throw Error("Found no accounts in the Send Data list (no white rows at x=" . scanX . " between y=" . gy . " and " . (gy + gh) . ").")
+
+        ; Each row's checkbox: its right border is the first dark pixel left of scanX
+        for i, row in rows {
+            row.right := 0
+            x := scanX
+            while (x > gx + gw // 2) {
+                if (Lum(PixelGetColor(x, row.cy)) < 180) {
+                    row.right := x
+                    break
+                }
+                x -= 1
+            }
+            if !row.right
+                throw Error("Found no checkbox in row " . i . " of the Send Data list (y=" . row.cy . ").")
+            WriteLog("Ticking account row " . i . " (checkbox at " . (row.right - 7) . "," . row.cy . ").")
+            Click(row.right - 5, row.cy)
+            Sleep(400)
+        }
+
+        ; Check every box is ticked: the tick puts black pixels in the box's middle
+        for i, row in rows {
+            dark := 0
+            loop 7 {
+                px := row.right - 10 + A_Index
+                loop 7 {
+                    if (Lum(PixelGetColor(px, row.cy - 4 + A_Index)) < 100)
+                        dark += 1
+                }
+            }
+            if (dark < 4)
+                throw Error("Account row " . i . " of the Send Data list isn't ticked after the click (" . dark . " dark pixels in its checkbox). Was someone using the RAM PC's mouse?")
+        }
+        WriteLog("Ticked " . rows.Length . " account(s).")
+        return rows.Length
+    } finally {
+        CoordMode("Pixel", oldPixel), CoordMode("Mouse", oldMouse)
+    }
+}
+
+; Brightness 0-255 of a PixelGetColor colour (0xRRGGBB)
+Lum(c) {
+    return ((c >> 16) & 0xFF) * 0.3 + ((c >> 8) & 0xFF) * 0.59 + (c & 0xFF) * 0.11
 }
 
 ; Whether a record's account (RAM's name, cut to 23 characters) is one of GateAccounts.
