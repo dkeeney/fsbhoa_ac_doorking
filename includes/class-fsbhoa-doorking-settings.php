@@ -299,16 +299,29 @@ class Fsbhoa_DoorKing_Settings {
             wp_send_json_error( 'Permission denied.', 403 );
         }
 
-        $options = isset( $_POST['options'] ) ? $_POST['options'] : [];
+        // Only options registered in this page's group are saved; update_option() cleans
+        // each with the sanitize callback it was registered with.
+        $allowed = [];
+        foreach ( get_registered_settings() as $name => $args ) {
+            if ( ( $args['group'] ?? '' ) === 'fsbhoa_doorking_options' ) {
+                $allowed[ $name ] = true;
+            }
+        }
+
+        $options = isset( $_POST['options'] ) && is_array( $_POST['options'] ) ? wp_unslash( $_POST['options'] ) : [];
         $saved_keys = [];
 
-        if ( ! empty( $options ) ) {
-            foreach ( $options as $option ) {
-                $key = sanitize_key( $option['name'] );
-                $val = sanitize_text_field( $option['value'] );
-                update_option( $key, $val );
-                $saved_keys[] = $key;
+        foreach ( $options as $option ) {
+            $key = sanitize_key( $option['name'] ?? '' );
+            if ( 'fsbhoa_dk_manual_pin' === $key ) {
+                continue; // Not an option: written to the vendor code slot below
             }
+            if ( ! isset( $allowed[ $key ] ) ) {
+                error_log( "FSBHOA DoorKing Settings: ignored unregistered option '{$key}'." );
+                continue;
+            }
+            update_option( $key, $option['value'] ?? '' );
+            $saved_keys[] = $key;
         }
 
         // Handle checkboxes: if not in POST, set to '0'
