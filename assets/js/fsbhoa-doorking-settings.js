@@ -67,17 +67,22 @@ jQuery(document).ready(function($) {
     });
 
 
-    // --- 3. Manual RAM Export Trigger ---
+    // --- 3. Resend Everything to DoorKing (a full export, even if RAM is up to date) ---
     $('#fsbhoa-export-ram-csv-btn').on('click', function(e) {
         e.preventDefault();
         var $btn = $(this);
         var $feedback = $('#fsbhoa-export-feedback');
 
-        $btn.prop('disabled', true).text('Generating...');
-        $feedback.show().css('color', '#666').text('Writing CSV and trigger files...');
+        if (!window.confirm('This sends every resident, vendor and gate code to RAM, which then sends them to the gates, even if nothing has changed.\n\n' +
+                'For ordinary changes, use Push Changes Now instead. Use this only when RAM needs everything again, for example after its database was restored.\n\nContinue?')) {
+            return;
+        }
+
+        $btn.prop('disabled', true).text('Sending...');
+        $feedback.show().css('color', '#666').text('Writing the export for RAM...');
 
         $.post(fsbhoa_dk_vars.ajax_url, {
-            action: 'fsbhoa_dk_generate_csv',
+            action: 'fsbhoa_dk_resend_all',
             nonce: fsbhoa_dk_vars.nonce
         })
         .done(function(response) {
@@ -91,7 +96,7 @@ jQuery(document).ready(function($) {
             $feedback.css('color', '#d63638').text('✗ Server or network error.');
         })
         .always(function() {
-            $btn.prop('disabled', false).text('Generate RAM CSV Now');
+            $btn.prop('disabled', false).text('Resend Everything to DoorKing');
             setTimeout(function() {
                 $feedback.fadeOut();
             }, 5000);

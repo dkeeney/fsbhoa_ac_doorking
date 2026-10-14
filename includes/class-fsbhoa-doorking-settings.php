@@ -239,7 +239,7 @@ class Fsbhoa_DoorKing_Settings {
                    value="<?php echo esc_attr( $curr_code ); ?>"
                    maxlength="4"
                    style="width: 100px; font-size: 18px; text-align: center; letter-spacing: 3px; font-weight: bold;" />
-            <p class="description">Live code accepted at the gate and published on the website.</p>
+            <p class="description">The code accepted at the gates. A new code reaches the gates on the next Push Changes Now, and the website once RAM confirms it.</p>
         </div>
         <?php
     }
@@ -330,40 +330,35 @@ class Fsbhoa_DoorKing_Settings {
         }
 
         // -- HANDLE VENDOR ACCESS CODES --
-        $rotation_enabled = ( get_option( 'fsbhoa_dk_enable_rotation', '0' ) === '1' );
-        $rotation         = new Fsbhoa_DoorKing_Rotation();
-        $slot_ids         = $rotation->get_vendor_record_ids();
-
-        if ( $rotation_enabled ) {
-            // Auto Mode: Run full rotation cycle (evaluates grace, generates next PIN, pushes payload)
-            $rotation->run_daily_rotation_cycle();
-        } else {
-            // Manual Mode:
-            // 1. Look for the manual PIN from the form
+        // Saving changes only the database. A changed code reaches the gates on the next
+        // push (core's "Push Changes Now"; the banner shows it waiting), and the website once
+        // RAM confirms that push. Auto-rotation runs on its daily schedule, not on save.
+        if ( get_option( 'fsbhoa_dk_enable_rotation', '0' ) !== '1' ) {
             $manual_pin = '';
-            if ( isset( $_POST['options'] ) && is_array( $_POST['options'] ) ) {
-                foreach ( $_POST['options'] as $opt ) {
-                    if ( isset( $opt['name'] ) && 'fsbhoa_dk_manual_pin' === $opt['name'] ) {
-                        $manual_pin = sanitize_text_field( $opt['value'] );
-                        break;
-                    }
+            foreach ( $options as $opt ) {
+                if ( 'fsbhoa_dk_manual_pin' === ( $opt['name'] ?? '' ) ) {
+                    $manual_pin = sanitize_text_field( $opt['value'] ?? '' );
+                    break;
                 }
             }
 
-            // 2. Write manual PIN into Slot A (active) and ensure Slot B is inactive
-            if ( ! empty( $manual_pin ) ) {
-                $rotation->set_credential( $slot_ids['current'], $manual_pin, 'active' );
+            // Manual PIN in the Current slot; Previous and Next off
+            $rotation = new Fsbhoa_DoorKing_Rotation();
+            $slot_ids = $rotation->get_vendor_record_ids();
+            $changed  = false;
+            if ( '' !== $manual_pin ) {
+                $changed = $rotation->stage_credential( $slot_ids['current'], $manual_pin, 'active' ) || $changed;
             }
-            $rotation->set_credential( $slot_ids['previous'], '', 'inactive' );
-            $rotation->deactivate_credential( $slot_ids['next'] );
-            delete_option( 'fsbhoa_dk_next_month_code' );
+            $changed = $rotation->stage_credential( $slot_ids['previous'], '', 'inactive' ) || $changed;
+            $changed = $rotation->deactivate_credential( $slot_ids['next'] ) || $changed;
+            $changed = delete_option( 'fsbhoa_dk_next_month_code' ) || $changed;
 
-            // 3. Trigger DoorKing RAM export and push single-code payload to the website
-            do_action( 'fsbhoa_doorking_trigger_export' );
-            $rotation->notify_website_api( $manual_pin, '', '' );
+            if ( $changed ) {
+                $rotation->website_update_pending();
+            }
         }
 
-        wp_send_json_success( 'DoorKing settings saved successfully.' );
+        wp_send_json_success( 'DoorKing settings saved. Use Push Changes Now to send any changes to the gates.' );
     }
 
     public function render_settings_page() {
@@ -381,7 +376,7 @@ class Fsbhoa_DoorKing_Settings {
             <?php do_settings_sections( 'fsbhoa_doorking_settings' ); ?>
             <p class="submit" style="display: flex; gap: 12px; align-items: center;">
                 <button type="button" id="fsbhoa-save-doorking-settings-button" class="button button-primary">Save DoorKing Settings</button>
-                <button type="button" id="fsbhoa-export-ram-csv-btn" class="button button-secondary">Generate RAM CSV Now</button>
+                <button type="button" id="fsbhoa-export-ram-csv-btn" class="button button-secondary" title="Sends every resident, vendor and code to RAM and the gates, even if nothing changed">Resend Everything to DoorKing</button>
                 <span id="fsbhoa-save-feedback" style="display: none; vertical-align: middle;"></span>
                 <span id="fsbhoa-export-feedback" style="display: none; vertical-align: middle; font-weight: 600;"></span>
             </p>
@@ -391,7 +386,9 @@ class Fsbhoa_DoorKing_Settings {
 
     public function enqueue_assets( $hook ) {
         if ( $hook === 'fsbhoa-ac_page_fsbhoa_doorking_settings' ) {
-            wp_enqueue_script( 'fsbhoa-doorking-settings-js', plugin_dir_url( dirname( __FILE__ ) ) . 'assets/js/fsbhoa-doorking-settings.js', array( 'jquery' ), '1.0.0', true );
+            // Versioned by file time, so browsers pick up changes
+            $js_file = plugin_dir_path( dirname( __FILE__ ) ) . 'assets/js/fsbhoa-doorking-settings.js';
+            wp_enqueue_script( 'fsbhoa-doorking-settings-js', plugin_dir_url( dirname( __FILE__ ) ) . 'assets/js/fsbhoa-doorking-settings.js', array( 'jquery' ), (string) filemtime( $js_file ), true );
 
             wp_localize_script( 'fsbhoa-doorking-settings-js', 'fsbhoa_dk_vars', array(
                 'ajax_url' => admin_url( 'admin-ajax.php' ),

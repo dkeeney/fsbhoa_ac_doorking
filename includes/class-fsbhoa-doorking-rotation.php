@@ -8,6 +8,10 @@ class Fsbhoa_DoorKing_Rotation {
     // Holds next month's code in the gates for the last "Days Before" days of the month
     const VENDOR_NEXT_NAME     = 'Vendor (Next)';
 
+    // When a vendor code was changed on the settings page (a timestamp), until RAM has the
+    // change and the website has been told
+    const WEBSITE_PENDING_OPTION = 'fsbhoa_dk_website_pending';
+
     public function __construct() {
         add_action( 'fsbhoa_dk_daily_rotation_check', [ $this, 'run_daily_rotation_cycle' ] );
 
@@ -15,6 +19,38 @@ class Fsbhoa_DoorKing_Rotation {
         fsbhoa_dk_schedule_daily( 'fsbhoa_dk_daily_rotation_check', '00:01' );
 
         add_action( 'wp_ajax_fsbhoa_dk_force_sync', [ $this, 'ajax_force_sync' ] );
+        add_action( 'fsbhoa_dk_import_confirmed', [ $this, 'notify_website_after_import' ] );
+    }
+
+    /**
+     * The settings page changed a vendor code: the gates get it on the next push, and the
+     * website once RAM confirms that push (notify_website_after_import).
+     */
+    public function website_update_pending() {
+        update_option( self::WEBSITE_PENDING_OPTION, time(), false );
+        do_action( 'fsbhoa_dk_credentials_changed' );
+    }
+
+    /**
+     * fsbhoa_dk_import_confirmed: once the gates have a code changed on the settings page,
+     * post it to the website, so the website never shows a code the gates don't accept.
+     *
+     * @param int $exported_at The confirmed export's trigger time.
+     */
+    public function notify_website_after_import( $exported_at ) {
+        $pending = (int) get_option( self::WEBSITE_PENDING_OPTION, 0 );
+        if ( ! $pending || (int) $exported_at < $pending ) {
+            return; // nothing waiting, or that export was made before the change
+        }
+        delete_option( self::WEBSITE_PENDING_OPTION );
+
+        // With auto-rotation on, the daily cycle posts the codes
+        if ( get_option( 'fsbhoa_dk_enable_rotation', '0' ) === '1' ) {
+            return;
+        }
+        error_log( 'FSBHOA DoorKing: RAM has the new vendor code; sending it to the website.' );
+        $slot_ids = $this->get_vendor_record_ids();
+        $this->notify_website_api( (string) $this->get_credential_value( $slot_ids['current'] ), '', '' );
     }
 
     /**

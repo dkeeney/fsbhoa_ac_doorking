@@ -36,7 +36,7 @@ WordPress ──writes──> NAS: To_RAM_<Env>\updates.csv + import_now.flag
 ```
 
 1. **Noticing changes.** At the end of any request that could change what RAM holds (a cardholder or vehicle saved, a DoorKing setting changed), the plugin builds the export in memory and compares its hash with the export RAM last confirmed. Only a real difference shows on the banner.
-2. **Exporting.** On **Push Changes Now**, at the nightly export (00:05), from **Generate RAM CSV Now** on the settings page, or after a vendor code rotation, the plugin writes the whole configuration to `updates.csv`. Each export is a full replacement, not a list of changes: every active resident household and vendor, with their active, unexpired credentials. The file is written under a temporary name and renamed, so the script never reads half a file. Then the plugin drops a trigger file, `import_now.flag`, with the environment, the server's host name and the time.
+2. **Exporting.** On **Push Changes Now**, at the nightly export (00:05), from **Resend Everything to DoorKing** on the settings page (everything, even if RAM is up to date), or after a vendor code rotation, the plugin writes the whole configuration to `updates.csv`. Each export is a full replacement, not a list of changes: every active resident household and vendor, with their active, unexpired credentials. The file is written under a temporary name and renamed, so the script never reads half a file. Then the plugin drops a trigger file, `import_now.flag`, with the environment, the server's host name and the time.
 3. **Importing.** `ram_automation/DK_Sync.ahk`, an AutoHotkey v2 script on the RAM PC, sees the trigger and checks that its environment and host match the PC's own configuration. It then drives RAM's menus by name: it imports the file (replacing RAM's configuration), opens Send Data Now, ticks every account and sends.
 4. **Confirming.** The script waits for each gate's "Download Data" (or "Database is Up To Date") record in RAM's Live Streaming file, and treats "Failed To Connect" or no answer within the time limit as an error.
 5. **Reporting.** The script writes `import_result.txt` (success, error or rejected, with a message, and the trigger's time so the plugin matches it to the right export), keeps the processed CSV for inspection (only the newest, since it holds every resident's codes), and logs to `Logs\automation_<env>.log`.
@@ -70,6 +70,8 @@ When **Enable rotation** is on, a daily job at 00:01 (just before the nightly ex
 - posts the current, previous and next codes to the website receiver (the separate `fsbhoa_ac_vender_code_receiver` plugin) with a bearer token, so the website can show vendors the right code;
 - exports to RAM when a code changed.
 
+With rotation off, the **Active Vendor PIN** is saved with the settings, reaches the gates on the next **Push Changes Now**, and is posted to the website once RAM confirms that push.
+
 Codes picked for residents' keypads avoid next month's vendor code, since two holders of one gate code can't both be in RAM.
 
 ## Requirements
@@ -90,7 +92,7 @@ Codes picked for residents' keypads avoid next month's vendor code, since two ho
    - Copy `ram_automation/DK_Sync.ahk` to the shared folder (`Y:\Automation\DoorKing\`). This repository is the master copy: edit the script here and copy it over, never edit the copy on the NAS.
    - Copy `ram_automation/dk_sync.ini.example` to `C:\FSBHOA\dk_sync.ini` and set `Environment`, `ExpectedHost` and `BaseDir`. The example file explains the optional keys (`GateAccounts`, `RamWatch`, `RamPath`, `SendTimeoutSeconds`).
    - Run the script, and have Windows start it at login (for example, a shortcut in the Startup folder). It exits with a message if its configuration is missing.
-3. Fill in the settings below, then press **Generate RAM CSV Now** and watch the script's log for the import and the send.
+3. Fill in the settings below, then press **Resend Everything to DoorKing** and watch the script's log for the import and the send.
 
 `ram_automation/run.bat <testbed|production> <host>` creates a trigger by hand for testing on the RAM PC.
 

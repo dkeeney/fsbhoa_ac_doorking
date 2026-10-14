@@ -43,10 +43,15 @@ class Fsbhoa_DoorKing_Push {
             add_action( $hook, [ $this, 'queue_check' ], 99 );
         }
         add_action( 'updated_option', [ $this, 'option_changed' ] );
+        // The vendor code slots, changed on the settings page (Manual PIN)
+        add_action( 'fsbhoa_dk_credentials_changed', [ $this, 'queue_check' ] );
 
         add_action( 'fsbhoa_push_to_controllers', [ $this, 'push' ] );
         add_action( 'fsbhoa_dk_exported', [ $this, 'exported' ], 10, 2 );
         add_filter( 'fsbhoa_push_targets', [ $this, 'push_target' ] );
+
+        // "Resend Everything to DoorKing" on the settings page
+        add_action( 'wp_ajax_fsbhoa_dk_resend_all', [ $this, 'ajax_resend_all' ] );
     }
 
     private function state() {
@@ -93,8 +98,8 @@ class Fsbhoa_DoorKing_Push {
     }
 
     /**
-     * After any export (a push, the nightly export, "Generate RAM CSV Now", a vendor-code
-     * rotation): wait for its result.
+     * After any export (a push, the nightly export, "Resend Everything to DoorKing", a
+     * vendor-code rotation): wait for its result.
      */
     public function exported( $hash, $trigger ) {
         $state                  = $this->state();
@@ -139,6 +144,15 @@ class Fsbhoa_DoorKing_Push {
         }
         error_log( 'FSBHOA DoorKing: RAM import ' . ( $result['result'] ?? '?' ) . ( ! empty( $result['message'] ) ? ': ' . $result['message'] : '' ) );
         $this->save( $state );
+
+        if ( 'success' === ( $result['result'] ?? '' ) ) {
+            /**
+             * Fires once RAM confirms it imported an export and sent it to the gates.
+             *
+             * @param int $exported_at The export's trigger time (the flag's time=).
+             */
+            do_action( 'fsbhoa_dk_import_confirmed', (int) $state['exported_at'] );
+        }
         return $state;
     }
 
@@ -169,6 +183,29 @@ class Fsbhoa_DoorKing_Push {
             $state['error'] = $result->get_error_message();
             $this->save( $state );
         }
+    }
+
+    /**
+     * "Resend Everything to DoorKing": export even if RAM already has it, e.g. after RAM's
+     * database was restored. Like a push, it waits while RAM is importing the last export.
+     */
+    public function ajax_resend_all() {
+        check_ajax_referer( 'fsbhoa_dk_settings_nonce', 'nonce' );
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error( 'Unauthorized', 403 );
+        }
+
+        $state = $this->refresh( $this->state() );
+        if ( $this->waiting( $state ) && time() - $state['exported_at'] < self::IMPORT_TIMEOUT ) {
+            wp_send_json_error( 'RAM is still importing the last export. Try again when the banner shows it has finished.' );
+        }
+
+        $result = $this->export->generate_export();
+        if ( is_wp_error( $result ) ) {
+            wp_send_json_error( $result->get_error_message() );
+        }
+
+        wp_send_json_success( 'Sent to RAM. The banner shows the progress.' );
     }
 
     /**

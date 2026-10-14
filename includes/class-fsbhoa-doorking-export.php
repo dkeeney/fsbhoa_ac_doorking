@@ -23,7 +23,6 @@ class Fsbhoa_DoorKing_Export {
 
     public function __construct() {
         add_action( 'fsbhoa_doorking_trigger_export', [ $this, 'generate_export' ] );
-        add_action( 'wp_ajax_fsbhoa_dk_generate_csv', [ $this, 'ajax_manual_export' ] );
         add_action( 'fsbhoa_dk_daily_midnight_export', [ $this, 'generate_export' ] );
 
         $this->ensure_cron_scheduled();
@@ -56,20 +55,6 @@ class Fsbhoa_DoorKing_Export {
     // push was missed. (Until 2026-10-13 this ran at 00:05 UTC, which is 17:05 local.)
     public function ensure_cron_scheduled() {
         fsbhoa_dk_schedule_daily( 'fsbhoa_dk_daily_midnight_export', '00:05' );
-    }
-
-    public function ajax_manual_export() {
-        check_ajax_referer( 'fsbhoa_dk_settings_nonce', 'nonce' );
-        if ( ! current_user_can( 'manage_options' ) ) {
-            wp_send_json_error( 'Unauthorized', 403 );
-        }
-
-        $result = $this->generate_export();
-        if ( is_wp_error( $result ) ) {
-            wp_send_json_error( $result->get_error_message() );
-        }
-
-        wp_send_json_success( 'DoorKing sync files written successfully.' );
     }
 
     /**
@@ -491,6 +476,4 @@ class Fsbhoa_DoorKing_Export {
         return $field;
     }
 }
-
-new Fsbhoa_DoorKing_Export();
 
