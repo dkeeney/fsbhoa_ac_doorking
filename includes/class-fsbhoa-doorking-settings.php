@@ -257,8 +257,9 @@ class Fsbhoa_DoorKing_Settings {
         $next_code   = get_option( 'fsbhoa_dk_next_month_code', '' );
 
         $current_month = current_time( 'F' );
-        $prev_month    = date( 'F', strtotime( '-1 month', current_time( 'timestamp' ) ) );
-        $next_month    = date( 'F', strtotime( '+1 month', current_time( 'timestamp' ) ) );
+        // "first day of": a plain -1 month from the 31st lands in the same month
+        $prev_month    = date( 'F', strtotime( 'first day of -1 month', current_time( 'timestamp' ) ) );
+        $next_month    = date( 'F', strtotime( 'first day of +1 month', current_time( 'timestamp' ) ) );
 
         ?>
         <div id="fsbhoa-auto-status-wrap" style="background: #f6f7f7; border: 1px solid #ccd0d4; padding: 12px 16px; border-radius: 4px; max-width: 520px;">
