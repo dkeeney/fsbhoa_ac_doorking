@@ -24,7 +24,6 @@ class Fsbhoa_DoorKing_Export {
     public function __construct() {
         add_action( 'fsbhoa_doorking_trigger_export', [ $this, 'generate_export' ] );
         add_action( 'wp_ajax_fsbhoa_dk_generate_csv', [ $this, 'ajax_manual_export' ] );
-        add_action( 'fsbhoa_push_to_controllers', [ $this, 'generate_export' ] );
         add_action( 'fsbhoa_dk_daily_midnight_export', [ $this, 'generate_export' ] );
 
         $this->ensure_cron_scheduled();
@@ -73,46 +72,25 @@ class Fsbhoa_DoorKing_Export {
         wp_send_json_success( 'DoorKing sync files written successfully.' );
     }
 
-    public function generate_export() {
-        global $wpdb;
+    /**
+     * Builds the full RAM import CSV in memory: every active household and vendor. The
+     * result depends only on the database and the DoorKing settings, so comparing two
+     * builds shows whether anything RAM holds has changed (class-fsbhoa-doorking-push.php).
+     *
+     * @return array|WP_Error [ 'csv' => string, 'cards' => int ]
+     */
+    public function build_csv() {
         $this->global_devices = [];
         $this->global_pins    = [];
         $this->global_names   = [];
 
-        $csv_path    = get_option( 'fsbhoa_dk_csv_path', self::default_csv_path() );
-        $lock_path   = get_option( 'fsbhoa_dk_lock_path', self::default_flag_path() );
-
-        // Environment guard: never write a RAM trigger unless this server knows what it is,
-        // and only into a folder named for that environment.
-        $env = self::get_environment();
-        if ( '' === $env ) {
-            $message = 'DoorKing export aborted: FSBHOA_AC_ENVIRONMENT is not defined in wp-config.php (expected one of: ' . implode( ', ', self::ENVIRONMENTS ) . ').';
-            error_log( $message );
-            return new WP_Error( 'environment_not_set', $message );
-        }
-        foreach ( [ $csv_path, $lock_path ] as $path ) {
-            if ( false === stripos( basename( dirname( $path ) ), $env ) ) {
-                $message = sprintf( 'DoorKing export aborted: %s is not in a folder named for the "%s" environment.', $path, $env );
-                error_log( $message );
-                return new WP_Error( 'environment_path_mismatch', $message );
-            }
-        }
         $raw_sec    = get_option( 'fsbhoa_dk_security_level', '01' );
         $sec_level  = str_pad( ! empty( $raw_sec ) ? $raw_sec : '01', 2, '0', STR_PAD_LEFT );
         $account     = get_option( 'fsbhoa_dk_account_name', 'SOUTH GATES' );
-        $ram_version = get_option( 'fsbhoa_dk_ram_version', '65.b' ); // '63.h' or '65.b'
 
-        $target_dir = dirname( $csv_path );
-        if ( ! is_dir( $target_dir ) ) {
-            if ( ! wp_mkdir_p( $target_dir ) ) {
-                return new WP_Error( 'dir_error', 'Cannot create export directory: ' . $target_dir );
-            }
-        }
-
-        $tmp_file = $csv_path . '.tmp';
-        $handle   = fopen( $tmp_file, 'w' );
+        $handle = fopen( 'php://temp', 'w+' );
         if ( ! $handle ) {
-            return new WP_Error( 'file_error', 'Cannot open temp file for writing: ' . $tmp_file );
+            return new WP_Error( 'file_error', 'Cannot open a memory buffer for the export.' );
         }
 
         // 1. Build Header: RAM 63.h expects 'NAME', 65.b expects 'Resident'
@@ -133,15 +111,56 @@ class Fsbhoa_DoorKing_Export {
         // 3. Export Vendors
         $this->export_vendors( $handle, $account, $sec_level );
 
+        rewind( $handle );
+        $csv = stream_get_contents( $handle );
         fclose( $handle );
 
         // Refuse to publish an export the controllers cannot hold
         $card_count = count( $this->global_devices );
         if ( $card_count > self::MAX_CARDS ) {
-            unlink( $tmp_file );
             $message = sprintf( 'DoorKing export aborted: %d cards exceeds the controller limit of %d.', $card_count, self::MAX_CARDS );
             error_log( $message );
             return new WP_Error( 'card_limit_exceeded', $message );
+        }
+
+        return [ 'csv' => $csv, 'cards' => $card_count ];
+    }
+
+    public function generate_export() {
+        $csv_path    = get_option( 'fsbhoa_dk_csv_path', self::default_csv_path() );
+        $lock_path   = get_option( 'fsbhoa_dk_lock_path', self::default_flag_path() );
+
+        // Environment guard: never write a RAM trigger unless this server knows what it is,
+        // and only into a folder named for that environment.
+        $env = self::get_environment();
+        if ( '' === $env ) {
+            $message = 'DoorKing export aborted: FSBHOA_AC_ENVIRONMENT is not defined in wp-config.php (expected one of: ' . implode( ', ', self::ENVIRONMENTS ) . ').';
+            error_log( $message );
+            return new WP_Error( 'environment_not_set', $message );
+        }
+        foreach ( [ $csv_path, $lock_path ] as $path ) {
+            if ( false === stripos( basename( dirname( $path ) ), $env ) ) {
+                $message = sprintf( 'DoorKing export aborted: %s is not in a folder named for the "%s" environment.', $path, $env );
+                error_log( $message );
+                return new WP_Error( 'environment_path_mismatch', $message );
+            }
+        }
+
+        $target_dir = dirname( $csv_path );
+        if ( ! is_dir( $target_dir ) ) {
+            if ( ! wp_mkdir_p( $target_dir ) ) {
+                return new WP_Error( 'dir_error', 'Cannot create export directory: ' . $target_dir );
+            }
+        }
+
+        $built = $this->build_csv();
+        if ( is_wp_error( $built ) ) {
+            return $built;
+        }
+
+        $tmp_file = $csv_path . '.tmp';
+        if ( false === file_put_contents( $tmp_file, $built['csv'] ) ) {
+            return new WP_Error( 'file_error', 'Cannot write temp file: ' . $tmp_file );
         }
 
         // Atomic swap
@@ -150,9 +169,19 @@ class Fsbhoa_DoorKing_Export {
         }
 
         // Drop the trigger file for AutoHotKey. DK_Sync.ahk rejects it unless env and host
-        // match the RAM PC's local dk_sync.ini.
-        $host = wp_parse_url( home_url(), PHP_URL_HOST );
-        file_put_contents( $lock_path, "env={$env}\r\nhost={$host}\r\ntime=" . time() . "\r\n" );
+        // match the RAM PC's local dk_sync.ini. It echoes time= back in its import result
+        // (import_result.txt), which is how the push status knows the result is for this export.
+        $host    = wp_parse_url( home_url(), PHP_URL_HOST );
+        $trigger = time();
+        file_put_contents( $lock_path, "env={$env}\r\nhost={$host}\r\ntime={$trigger}\r\n" );
+
+        /**
+         * Fires after an export is handed to RAM.
+         *
+         * @param string $hash    md5 of the CSV.
+         * @param int    $trigger The trigger file's time= value.
+         */
+        do_action( 'fsbhoa_dk_exported', md5( $built['csv'] ), $trigger );
 
         return true;
     }

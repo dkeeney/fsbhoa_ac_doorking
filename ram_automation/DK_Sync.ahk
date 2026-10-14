@@ -55,6 +55,10 @@ global RamRetryMs     := 600000   ; at most one start every 10 minutes
 global RamLastStart   := 0        ; A_TickCount of the last start; 0: none yet
 global LiveDir        := BaseDir . "\Live_" . StrTitle(Environment)
 global StatusFile     := LiveDir . "\ram_pc_status.txt"
+; RAM's Live Streaming Disk File. Besides live transactions, RAM writes a status record there
+; when a Send Data session ends, which is how the import knows the send is finished.
+global StreamFile     := LiveDir . "\stream.txt"
+global SendTimeoutMs  := 1000 * Integer("0" . Trim(IniRead(IniFile, "DK_Sync", "SendTimeoutSeconds", "300")))
 global StatusFileOk   := true     ; so a failing heartbeat write is logged once, not every check
 ; DoorKing32.exe's path, to start RAM: from dk_sync.ini (RamPath), else noted while RAM runs
 global RamPath        := Trim(IniRead(IniFile, "DK_Sync", "RamPath", ""))
@@ -67,6 +71,10 @@ global WatchDir    := BaseDir . "\To_RAM_" . StrTitle(Environment)
 global LogDir      := BaseDir . "\Logs"
 global FlagFile    := WatchDir . "\import_now.flag"
 global CsvFile     := WatchDir . "\updates.csv"
+; The import's result, for the server's push status: a contract with fsbhoa_ac_doorking
+; (Fsbhoa_DoorKing_Push::RESULT_FILE). trigger= echoes the trigger file's time=.
+global ResultFile  := WatchDir . "\import_result.txt"
+global TriggerTime := ""
 global LogFile     := LogDir . "\automation_" . Environment . ".log"
 global RamWinTitle := "ahk_class DoorKing32AppClass ahk_exe DoorKing32.exe"
 
@@ -106,6 +114,7 @@ HandleTrigger() {
     if (reason != "") {
         WriteLog("REJECTED trigger: " . reason)
         FileMove(FlagFile, WatchDir . "\import_now.rejected_" . FormatTime(, "yyyyMMdd_HHmmss"), 1)
+        WriteResult("rejected", reason)
         SetTimer(WatchFolder, 3000)
         return
     }
@@ -113,17 +122,20 @@ HandleTrigger() {
     if !FileExist(CsvFile) {
         WriteLog("WARNING: Flag file found, but " . CsvFile . " is missing. Aborting run.")
         FileDelete(FlagFile)
+        WriteResult("error", "updates.csv is missing")
         SetTimer(WatchFolder, 3000)
         return
     }
 
     WriteLog("Trigger file and CSV detected. Starting import process.")
 
+    result := "success", message := ""
     try {
         RunAutomation()
         WriteLog("SUCCESS: Full Import and Network Send sequence completed.")
     } catch Error as err {
         WriteLog("ERROR: " . err.Message)
+        result := "error", message := err.Message
     }
     ; Minimize RAM after a failed run too (a successful one already has)
     if WinExist(RamWinTitle)
@@ -148,10 +160,41 @@ HandleTrigger() {
         FileMove(CsvFile, WatchDir . "\updates_processed_" . FormatTime(, "yyyyMMdd_HHmmss") . ".csv", 1)
     }
 
+    WriteResult(result, message)
     SetTimer(WatchFolder, 3000)
 }
 
+; Writes import_result.txt (key=value lines) through a temp file, so the server never reads
+; half of it. result is success, error or rejected; message is one line.
+WriteResult(result, message) {
+    tmp := ResultFile . ".tmp"
+    try {
+        if FileExist(tmp)
+            FileDelete(tmp)
+        FileAppend("finished=" . FormatTime(, "yyyy-MM-dd HH:mm:ss") . "`r`ntrigger=" . TriggerTime
+            . "`r`nresult=" . result . "`r`nmessage=" . RegExReplace(message, "[\r\n]+", " ") . "`r`n", tmp)
+    } catch Error as err {
+        WriteLog("Could not write " . tmp . " (" . err.Message . ").")
+        return
+    }
+    ; The server reads the result file every few seconds while its banner waits, and its NAS
+    ; client keeps the file open for a moment after each read, so replacing it can fail.
+    ; Try for up to 15 seconds.
+    lastErr := ""
+    loop 30 {
+        try {
+            FileMove(tmp, ResultFile, 1)
+            return
+        } catch Error as err {
+            lastErr := err.Message
+        }
+        Sleep(500)
+    }
+    WriteLog("Could not write " . ResultFile . " (" . lastErr . ").")
+}
+
 CheckTrigger() {
+    global TriggerTime
     fields := Map()
     for line in StrSplit(FileRead(FlagFile), "`n", "`r") {
         parts := StrSplit(line, "=", " `t", 2)
@@ -160,6 +203,7 @@ CheckTrigger() {
     }
     env  := fields.Has("env")  ? fields["env"]  : ""
     host := fields.Has("host") ? fields["host"] : ""
+    TriggerTime := fields.Has("time") ? fields["time"] : ""
     if (env != Environment)
         return "env '" . env . "' does not match this PC's '" . Environment . "'"
     if (host != ExpectedHost)
@@ -371,6 +415,9 @@ RunAutomation() {
         Sleep(500)
     }
     
+    ; Note where the Live Streaming file ends, so only records RAM writes after OK count
+    streamStart := FileExist(StreamFile) ? FileGetSize(StreamFile) : -1
+
     WriteLog("Initiating transmission to gate controllers.")
     ControlFocus("Button1", "A") ; OK
     Sleep(500)
@@ -384,39 +431,24 @@ RunAutomation() {
         throw Error("Send Data dialog did not close after OK.")
     WriteLog("Data is transmitting to gates. Waiting for completion...")
 
-    ; Then RAM shows a status window ("Cancel Session", "Close", and a list with one row per
-    ; account and its Status, such as "Succeeded"). The rows aren't window text, so the
-    ; session is followed by its "Cancel Session" button: greyed out before the session starts,
-    ; enabled while it runs, greyed out again when it is over. A session can take under a
-    ; second, so check 4 times a second; if it is never seen running within 30 seconds, take
-    ; it as having been too quick to see.
-    statusDlg := ""
-    started := false
-    startBy := A_TickCount + 30000
-    deadline := A_TickCount + 300000
-    loop {
-        if (A_TickCount >= deadline)
-            throw Error("Timed out waiting for the Send Data session to finish.")
-        if (hwnd := WinExist("ahk_class #32770 ahk_exe DoorKing32.exe", "Cancel Session")) {
+    ; RAM prepares for up to a minute or more before it reaches the panel, and the status
+    ; window doesn't show when the session ends. RAM's own record in the Live Streaming file
+    ; does: one per account sent, when its session ends.
+    if (streamStart >= 0) {
+        WaitForSendRecords(streamStart, GateRowsY.Length)
+        statusDlg := ""
+        if (hwnd := WinExist("ahk_class #32770 ahk_exe DoorKing32.exe", "Cancel Session"))
             statusDlg := "ahk_id " . hwnd
-            running := false
-            try {
-                cancelBtn := FindButton("Cancel Session", statusDlg)
-                running := (cancelBtn != "" && ControlGetEnabled(cancelBtn, statusDlg))
-            }
-            if running
-                started := true
-            else if started
-                break   ; it ran, and is over
-            else if (A_TickCount >= startBy) {
-                WriteLog("Send session never seen running; it may have been too quick to see.")
-                break
-            }
-        }
-        Sleep(250)
+    } else {
+        WriteLog("No Live Streaming file at " . StreamFile . ", so the end of the send can't be confirmed; watching RAM's status window instead.")
+        statusDlg := WaitForSessionButton()
     }
-    if (statusDlg = "")
-        throw Error("The Send Data status window never appeared.")
+    if (statusDlg = "") {
+        WriteLog("Automation successful. Minimizing DoorKing RAM.")
+        Sleep(1000)
+        WinMinimize(RamWinTitle)
+        return
+    }
     Sleep(1000)
 
     ; Log each account's row. The list is RAM's own control (TBDMyListBox); if it doesn't
@@ -452,6 +484,91 @@ RunAutomation() {
     WriteLog("Automation successful. Minimizing DoorKing RAM.")
     Sleep(1000) ; Give the UI a second to settle after closing the dialog
     WinMinimize(RamWinTitle)
+}
+
+; Waits until RAM has written, after the given byte of the Live Streaming file, a record
+; that a Send Data session ended, for `accounts` accounts: "Download Data" (sent) or
+; "Database is Up To Date" (nothing to send). "Failed To Connect" is an error, and so is no
+; record within SendTimeoutSeconds. The file is in RAW Text: a status record has its type
+; (Network or RS232) at columns 45-57 and its message from column 66.
+WaitForSendRecords(offset, accounts) {
+    done := Map()
+    partial := ""
+    deadline := A_TickCount + SendTimeoutMs
+    loop {
+        if (A_TickCount >= deadline)
+            throw Error("No word from RAM that the send finished (no Download Data or Database is Up To Date record in " . StreamFile . " within " . (SendTimeoutMs // 1000) . " seconds).")
+        Sleep(1000)
+        try {
+            f := FileOpen(StreamFile, "r")
+            if (f.Length < offset)
+                offset := 0   ; the file was rotated: read the new one from the start
+            f.Pos := offset
+            text := f.Read()
+            offset := f.Pos
+            f.Close()
+        } catch {
+            continue   ; the NAS may be busy; try again
+        }
+        if (text = "")
+            continue   ; nothing new yet
+        lines := StrSplit(partial . text, "`n")
+        partial := lines.Pop()   ; a record still being written
+        for line in lines {
+            line := RTrim(line, "`r")
+            type := Trim(SubStr(line, 45, 13))
+            if (type != "RS232" && type != "Network")
+                continue
+            account := Trim(SubStr(line, 1, 23))
+            message := Trim(SubStr(line, 66))
+            if RegExMatch(message, "i)^Failed To Connect") {
+                WriteLog("RAM reports for " . account . ": " . message)
+                throw Error("RAM could not reach the panel for " . account . ": " . message)
+            }
+            if RegExMatch(message, "i)^(Download Data|Database is Up To Date)") {
+                WriteLog("RAM reports for " . account . ": " . message)
+                done[account] := message
+                if (done.Count >= accounts)
+                    return
+            }
+        }
+    }
+}
+
+; The fallback when there is no Live Streaming file: follows the session by the status
+; window's "Cancel Session" button, greyed out before the session starts, enabled while it
+; runs, greyed out again when it is over. RAM can prepare for over a minute before the
+; session starts, so a session never seen running within 30 seconds is taken as too quick
+; to see, which may be too early. Returns the status window, or "" if it never appeared.
+WaitForSessionButton() {
+    statusDlg := ""
+    started := false
+    startBy := A_TickCount + 30000
+    deadline := A_TickCount + 300000
+    loop {
+        if (A_TickCount >= deadline)
+            throw Error("Timed out waiting for the Send Data session to finish.")
+        if (hwnd := WinExist("ahk_class #32770 ahk_exe DoorKing32.exe", "Cancel Session")) {
+            statusDlg := "ahk_id " . hwnd
+            running := false
+            try {
+                cancelBtn := FindButton("Cancel Session", statusDlg)
+                running := (cancelBtn != "" && ControlGetEnabled(cancelBtn, statusDlg))
+            }
+            if running
+                started := true
+            else if started
+                break   ; it ran, and is over
+            else if (A_TickCount >= startBy) {
+                WriteLog("Send session never seen running; it may have been too quick to see.")
+                break
+            }
+        }
+        Sleep(250)
+    }
+    if (statusDlg = "")
+        throw Error("The Send Data status window never appeared.")
+    return statusDlg
 }
 
 ; --- RAM WATCH AND HEARTBEAT ---

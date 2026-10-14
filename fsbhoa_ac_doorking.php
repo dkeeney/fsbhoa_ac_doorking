@@ -74,7 +74,12 @@ class FSBHOA_AC_DoorKing {
 
         // Load and instantiate the DoorKing RAM Export & Sync Module
         require_once plugin_dir_path( __FILE__ ) . 'includes/class-fsbhoa-doorking-export.php';
-        new Fsbhoa_DoorKing_Export();
+        $export = new Fsbhoa_DoorKing_Export();
+
+        // Core's "Push Changes Now": notice changes RAM doesn't have, export them on a push,
+        // and report the import's progress on core's banner
+        require_once plugin_dir_path( __FILE__ ) . 'includes/class-fsbhoa-doorking-push.php';
+        new Fsbhoa_DoorKing_Push( $export );
 
         // Hook into the core plugin's UI for the cardholder edit page
         add_action( 'fsbhoa_render_credential_fields', [ $this, 'render_ui' ], 10, 2 );

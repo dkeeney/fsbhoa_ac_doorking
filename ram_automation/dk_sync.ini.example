@@ -16,6 +16,9 @@
 ;                   the heartbeat ram_pc_status.txt in that folder for the vehicle settings
 ;                   page. Default 0 (off).
 ; RamPath         : full path of DoorKing32.exe. Optional: the script notes it while RAM runs.
+; SendTimeoutSeconds : optional. How long an import waits for RAM's record that the send to
+;                   the panels finished (in Live_<Environment>\stream.txt). Default 300; raise
+;                   it if the panels' link is slow (production's is cellular).
 
 [DK_Sync]
 Environment=testbed
