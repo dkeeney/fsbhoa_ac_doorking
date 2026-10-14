@@ -96,11 +96,6 @@ if !DirExist(LogDir)
 WriteLog("AHK Sync Script Started (" . Environment . ", accepting triggers from " . ExpectedHost . "). Watching " . WatchDir)
 SetTimer(WatchFolder, 3000)
 
-; Temporary: log RAM's main window controls, to see whether its account list can be read
-; (to select the Send Data gate rows by account name instead of GateRowsY)
-if WinExist(RamWinTitle)
-    LogControls(RamWinTitle, "RAM main window")
-
 if RamWatch {
     WriteLog("RAM watch on: heartbeat in " . StatusFile)
     CheckRam()
@@ -719,34 +714,6 @@ MenuItemText(menu, pos) {
         text := SubStr(text, 1, tab - 1)
     text := StrReplace(StrReplace(StrReplace(text, "&&", Chr(1)), "&"), Chr(1), "&")
     return Trim(RegExReplace(text, "(\.\.\.|" . Chr(0x2026) . ")$"))   ; "..." or an ellipsis
-}
-
-; Logs every control in win: its ClassNN, position, text, and items when it is a list that
-; can be read (a list box, combo box or list view). Temporary, see above.
-LogControls(win, label) {
-    try {
-        for ctl in WinGetControls(win) {
-            line := label . " control " . ctl
-            try {
-                ControlGetPos(&x, &y, &w, &h, ctl, win)
-                line .= " at " . x . "," . y . " size " . w . "x" . h
-            }
-            try line .= " text '" . SubStr(RegExReplace(ControlGetText(ctl, win), "[\r\n]+", " "), 1, 200) . "'"
-            try {
-                items := ControlGetItems(ctl, win)
-                list := ""
-                for item in items
-                    list .= (list = "" ? "" : " | ") . item
-                line .= " items (" . items.Length . "): " . SubStr(list, 1, 500)
-            }
-            if InStr(ctl, "SysListView") {
-                try line .= " rows: " . SubStr(RegExReplace(ListViewGetContent(, ctl, win), "\n", " | "), 1, 500)
-            }
-            WriteLog(line)
-        }
-    } catch Error as err {
-        WriteLog("Could not list the controls of the " . label . " (" . err.Message . ").")
-    }
 }
 
 WriteLog(Message) {
