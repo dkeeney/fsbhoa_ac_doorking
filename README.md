@@ -125,3 +125,7 @@ The buttons on the page save the settings, export to RAM now, and run the rotati
 ## Author
 
 * **David Keeney** - *Initial Design & Development* - <dkeeney@gmail.com>
+
+## License
+
+GPL v2 or later, the same as [fsbhoa_ac_core](https://github.com/dkeeney/fsbhoa_ac_core).
