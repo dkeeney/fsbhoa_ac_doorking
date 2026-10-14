@@ -36,7 +36,7 @@ Implications:
 
 This repo is the **master copy**. Edit the scripts here, then deploy them to `Y:\Automation\DoorKing\` on the RAM PC. Never edit the NAS copy directly. The scripts use CRLF line endings, which `.gitattributes` preserves.
 
-The import drives RAM's GUI with hard-coded screen coordinates, so changes to RAM's UI or window size can break it. The RAM watch only starts RAM, with no clicks. Never commit RAM exports or other resident data files (`export.csv`, `*DKEXPORT*.CSV`, `updates_processed_*.csv`).
+The import drives RAM's GUI, with no screen coordinates since 2026-10-14: menu commands by the items' names (`RunRamMenu()`), dialog buttons and checkboxes by their controls (`Button2`, `FindButton()`), and only the Send Data Now account checkboxes by mouse clicks, at positions found from the grid's pixels (`TickAllAccounts()`). So a change to RAM's menu wording, dialog layout or the grid's look can still break it, and the error says what wasn't found. The RAM watch only starts RAM, with no clicks. Never commit RAM exports or other resident data files (`export.csv`, `*DKEXPORT*.CSV`, `updates_processed_*.csv`).
 
 ## Environment separation
 
@@ -77,7 +77,7 @@ Production connection path: `[1838-010 controller] → [cellular adapter] → [D
 
 This plugin has no Go service and receives no live events. RAM's "Live Streaming" output goes straight to `fsbhoa_ac_vehicle`'s `vehicle_service`, which records tag and keypad reads in core's vehicle log (see that plugin's CLAUDE.md, "RAM Live Streaming format"). Windshield tags and entry codes are vehicle authentication, so they never go to the pedestrian log (`/monitor/log-event`).
 
-**Retired 2026-10-13: the DoorKing proxy** (`fsbhoa_doorking`, `doorking/main.go`). It sat between RAM and the testbed controller on port 8084, read the controller's replies, and posted each tag read to the pedestrian log. It couldn't work in production, where controllers reach RAM through the DoorKing cloud, and RAM Live Streaming replaced it. Its service, settings (Proxy Listen Port, Physical Gate IP & Port, Controller Name) and `doorking_proxy.json` were removed. The three options `fsbhoa_dk_proxy_port`, `fsbhoa_dk_gate_ip` and `fsbhoa_dk_controller_name` may remain in `wp_options`; nothing reads them.
+**Retired 2026-10-13: the DoorKing proxy** (`fsbhoa_doorking`, `doorking/main.go`). It sat between RAM and the testbed controller on port 8084, read the controller's replies, and posted each tag read to the pedestrian log. It couldn't work in production, where controllers reach RAM through the DoorKing cloud, and RAM Live Streaming replaced it. Its service, settings (Proxy Listen Port, Physical Gate IP & Port, Controller Name) and `doorking_proxy.json` were removed. Its three options `fsbhoa_dk_proxy_port`, `fsbhoa_dk_gate_ip` and `fsbhoa_dk_controller_name` were deleted from the testbed's `wp_options` on 2026-10-14; nothing reads them. Production may still have them: delete them at deployment (`wp option delete fsbhoa_dk_proxy_port fsbhoa_dk_gate_ip fsbhoa_dk_controller_name`).
 
 Develop and test against the testbed controller only; never send commands to the production controllers.
 
