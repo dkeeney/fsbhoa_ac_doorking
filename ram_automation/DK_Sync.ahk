@@ -34,6 +34,15 @@ global Environment  := StrLower(ReadRequired("Environment"))
 global ExpectedHost := StrLower(ReadRequired("ExpectedHost"))
 global BaseDir      := ReadRequired("BaseDir")
 global GateRowsY    := StrSplit(ReadRequired("GateRowsY"), ",", " ")
+; Optional: the accounts those rows are, in RAM's names. The rows are clicked by position (the
+; list is an ActiveX grid that can't be read), so RAM's completion records are checked against
+; these names: a click on the wrong row then fails the push instead of passing unnoticed.
+global GateAccounts := Trim(IniRead(IniFile, "DK_Sync", "GateAccounts", ""))
+GateAccounts := (GateAccounts = "") ? [] : StrSplit(GateAccounts, ",", " ")
+if (GateAccounts.Length && GateAccounts.Length != GateRowsY.Length) {
+    MsgBox("DK_Sync: GateAccounts lists " . GateAccounts.Length . " accounts but GateRowsY has " . GateRowsY.Length . " rows. The script will exit.", "DK_Sync", "Iconx")
+    ExitApp
+}
 
 if (Environment != "testbed" && Environment != "production") {
     MsgBox("DK_Sync: Environment must be 'testbed' or 'production', not '" . Environment . "'. The script will exit.", "DK_Sync", "Iconx")
@@ -86,6 +95,11 @@ if !DirExist(LogDir)
 
 WriteLog("AHK Sync Script Started (" . Environment . ", accepting triggers from " . ExpectedHost . "). Watching " . WatchDir)
 SetTimer(WatchFolder, 3000)
+
+; Temporary: log RAM's main window controls, to see whether its account list can be read
+; (to select the Send Data gate rows by account name instead of GateRowsY)
+if WinExist(RamWinTitle)
+    LogControls(RamWinTitle, "RAM main window")
 
 if RamWatch {
     WriteLog("RAM watch on: heartbeat in " . StatusFile)
@@ -262,18 +276,7 @@ RunAutomation() {
 
     ; --- 3. RESET TO MAIN MENU ---
     WriteLog("Forcing UI to main menu (View -> Accounts)")
-    MouseMove(138, 60)  ;  Click 'View' X, Y
-    Sleep(200)
-    Click("Down")
-    Sleep(100)
-    Click("Up")
-    Sleep(500)
-    
-    MouseMove(200, 140)  ;   Click 'View > Accounts' X, Y
-    Sleep(200)
-    Click("Down")
-    Sleep(300)
-    Click("Up")
+    RunRamMenu("View", "Accounts")
     Sleep(1500)
     
     Send("{Esc 2}")
@@ -282,19 +285,7 @@ RunAutomation() {
     ; --- 4. OPEN IMPORT WIZARD ---
     WriteLog("Opening File -> Import -> Import Now")
     
-    MouseMove(34, 60, 5)   ; Click 'File'
-    Sleep(500)
-    Click("Down")
-    Sleep(150)
-    Click("Up")
-    Sleep(1500)
-    
-    MouseMove(92, 299, 10)  ; Click 'Import'
-    Sleep(1500)
-    
-    MouseMove(420, 300, 10) ; Click 'Import Now'
-    Sleep(500)
-    Click()
+    RunRamMenu("File", "Import", "Import Now")
     Sleep(1500)
     
     if !WinWaitActive("Import", , 5)
@@ -378,18 +369,7 @@ RunAutomation() {
     WinActivate(RamWinTitle)
     Sleep(500)
     
-    MouseMove(195, 59)   ; Click 'Action'
-    Sleep(200)
-    Click("Down")
-    Sleep(100)
-    Click("Up")
-    Sleep(500)
-    
-    MouseMove(298, 334)  ; Click 'Send Data Now...'
-    Sleep(200)
-    Click("Down")
-    Sleep(100)
-    Click("Up")
+    RunRamMenu("Action", "Send Data Now")
     Sleep(500)
 
     ; --- 8. CONFIGURE SEND DATA ---
@@ -427,15 +407,36 @@ RunAutomation() {
     ; First the Send Data dialog closes. (Waiting for "any active dialog" here used to return
     ; at once, on the Send Data dialog itself, so RAM was minimized mid-send and the real
     ; completion dialog was left open.)
-    if !WinWaitClose(sendDlg, , 30)
-        throw Error("Send Data dialog did not close after OK.")
+    ; If no gate row got selected (the click at GateRowsY missed), RAM answers OK with a
+    ; message ("No account selected. You must choose at least one account to send data.")
+    ; instead. Close it and the Send Data dialog, and fail with that.
+    closeBy := A_TickCount + 30000
+    while WinExist(sendDlg) {
+        if (msg := WinExist("ahk_class #32770 ahk_exe DoorKing32.exe", "account selected")) {
+            text := RegExReplace(WinGetText("ahk_id " . msg), "\s+", " ")
+            WinClose("ahk_id " . msg)
+            Sleep(500)
+            try {
+                ControlFocus("Button2", sendDlg)   ; Cancel
+                Sleep(200)
+                ControlSend("{Space}", "Button2", sendDlg)
+            }
+            Sleep(500)
+            if WinExist(sendDlg)
+                WinClose(sendDlg)
+            throw Error("RAM refused to send: " . Trim(text) . " The click on the gate row (GateRowsY in dk_sync.ini) missed. Was someone using the RAM PC's mouse?")
+        }
+        if (A_TickCount >= closeBy)
+            throw Error("Send Data dialog did not close after OK.")
+        Sleep(250)
+    }
     WriteLog("Data is transmitting to gates. Waiting for completion...")
 
     ; RAM prepares for up to a minute or more before it reaches the panel, and the status
     ; window doesn't show when the session ends. RAM's own record in the Live Streaming file
     ; does: one per account sent, when its session ends.
     if (streamStart >= 0) {
-        WaitForSendRecords(streamStart, GateRowsY.Length)
+        WaitForSendRecords(streamStart)
         statusDlg := ""
         if (hwnd := WinExist("ahk_class #32770 ahk_exe DoorKing32.exe", "Cancel Session"))
             statusDlg := "ahk_id " . hwnd
@@ -449,36 +450,33 @@ RunAutomation() {
         WinMinimize(RamWinTitle)
         return
     }
-    Sleep(1000)
 
-    ; Log each account's row. The list is RAM's own control (TBDMyListBox); if it doesn't
-    ; answer like a standard list box, say so and go on.
-    rows := []
-    for ctl in WinGetControls(statusDlg) {
-        if InStr(ctl, "TBDMyListBox") {
-            try rows := ControlGetItems(ctl, statusDlg)
+    ; The status window's list can't be read (its rows hold no text), so the result comes
+    ; from the Live Streaming records above. Close the window: its Close button may still be
+    ; greyed out for a moment after the last record, and a mouse click on it doesn't take,
+    ; so wait for it and press it like OK. WinClose if that fails.
+    closeBtn := FindButton("Close", statusDlg)
+    if (closeBtn != "") {
+        enabledBy := A_TickCount + 15000
+        while (A_TickCount < enabledBy && WinExist(statusDlg)) {
+            try {
+                if ControlGetEnabled(closeBtn, statusDlg)
+                    break
+            }
+            Sleep(250)
+        }
+        try {
+            ControlFocus(closeBtn, statusDlg)
+            Sleep(200)
+            ControlSend("{Space}", closeBtn, statusDlg)
         }
     }
-    failed := false
-    if (rows.Length = 0)
-        WriteLog("Send finished. (The status list couldn't be read; check RAM's events.log for the result.)")
-    for row in rows {
-        WriteLog("Send status: " . row)
-        if RegExMatch(row, "i)fail|unsuccess")
-            failed := true
-    }
-
-    closeBtn := FindButton("Close", statusDlg)
-    if (closeBtn != "")
-        ControlClick(closeBtn, statusDlg)
     Sleep(1000)
     if WinExist(statusDlg) {
         WriteLog("Close button missed. Closing the status window.")
         WinClose(statusDlg)
         Sleep(500)
     }
-    if failed
-        throw Error("Send Data failed for at least one account (see the status lines above).")
 
     ; --- 10. CLEANUP & MINIMIZE ---
     WriteLog("Automation successful. Minimizing DoorKing RAM.")
@@ -487,17 +485,28 @@ RunAutomation() {
 }
 
 ; Waits until RAM has written, after the given byte of the Live Streaming file, a record
-; that a Send Data session ended, for `accounts` accounts: "Download Data" (sent) or
-; "Database is Up To Date" (nothing to send). "Failed To Connect" is an error, and so is no
-; record within SendTimeoutSeconds. The file is in RAW Text: a status record has its type
-; (Network or RS232) at columns 45-57 and its message from column 66.
-WaitForSendRecords(offset, accounts) {
-    done := Map()
+; that a Send Data session ended for each gate row: "Download Data" (sent) or "Database is
+; Up To Date" (nothing to send). With GateAccounts set, the records must be from those
+; accounts; a record from another account is logged and doesn't count. "Failed To Connect"
+; for a gate account is an error, and so is no record within SendTimeoutSeconds. The file
+; is in RAW Text: a status record has its account name in columns 1-23, its type (Network
+; or RS232) at columns 45-57 and its message from column 66.
+WaitForSendRecords(offset) {
+    done := Map()       ; Map() keys ignore case only with CaseSense off
+    done.CaseSense := false
+    others := ""        ; accounts that reported but aren't in GateAccounts
     partial := ""
     deadline := A_TickCount + SendTimeoutMs
     loop {
-        if (A_TickCount >= deadline)
-            throw Error("No word from RAM that the send finished (no Download Data or Database is Up To Date record in " . StreamFile . " within " . (SendTimeoutMs // 1000) . " seconds).")
+        if (A_TickCount >= deadline) {
+            missing := ""
+            for name in GateAccounts
+                if !done.Has(SubStr(name, 1, 23))
+                    missing .= (missing = "" ? "" : ", ") . name
+            throw Error("No word from RAM that the send finished (no Download Data or Database is Up To Date record in " . StreamFile . " within " . (SendTimeoutMs // 1000) . " seconds"
+                . (missing != "" ? " for " . missing : "") . ")."
+                . (others != "" ? " RAM reported for " . others . " instead: check GateRowsY in dk_sync.ini." : ""))
+        }
         Sleep(1000)
         try {
             f := FileOpen(StreamFile, "r")
@@ -521,6 +530,14 @@ WaitForSendRecords(offset, accounts) {
                 continue
             account := Trim(SubStr(line, 1, 23))
             message := Trim(SubStr(line, 66))
+            if !RegExMatch(message, "i)^(Failed To Connect|Download Data|Database is Up To Date)")
+                continue
+            if (GateAccounts.Length && !IsGateAccount(account)) {
+                WriteLog("RAM reports for " . account . ", which isn't in GateAccounts: " . message)
+                if !InStr(", " . others . ", ", ", " . account . ", ")
+                    others .= (others = "" ? "" : ", ") . account
+                continue
+            }
             if RegExMatch(message, "i)^Failed To Connect") {
                 WriteLog("RAM reports for " . account . ": " . message)
                 throw Error("RAM could not reach the panel for " . account . ": " . message)
@@ -528,11 +545,19 @@ WaitForSendRecords(offset, accounts) {
             if RegExMatch(message, "i)^(Download Data|Database is Up To Date)") {
                 WriteLog("RAM reports for " . account . ": " . message)
                 done[account] := message
-                if (done.Count >= accounts)
+                if (done.Count >= GateRowsY.Length)
                     return
             }
         }
     }
+}
+
+; Whether a record's account (RAM's name, cut to 23 characters) is one of GateAccounts.
+IsGateAccount(account) {
+    for name in GateAccounts
+        if (SubStr(name, 1, 23) = account)   ; = ignores case
+            return true
+    return false
 }
 
 ; The fallback when there is no Live Streaming file: follows the session by the status
@@ -641,6 +666,87 @@ FindButton(text, win) {
         }
     }
     return ""
+}
+
+; Runs a command from RAM's menu bar by the items' names, as a click on it would, for example
+; RunRamMenu("File", "Import", "Import Now"). A name matches an item's text without its "&"
+; shortcut marker, a trailing "..." and the shortcut key after a tab, ignoring case. If an
+; item isn't found, the error lists the items that menu has, so the name can be corrected.
+; (Replaces clicks at screen positions, which missed on the workbench PC; TODO #2.)
+RunRamMenu(path*) {
+    hwnd := WinExist(RamWinTitle)
+    if !hwnd
+        throw Error("DoorKing RAM is not running.")
+    menu := DllCall("GetMenu", "Ptr", hwnd, "Ptr")
+    if !menu
+        throw Error("RAM's window has no menu bar.")
+    for i, name in path {
+        found := -1
+        names := ""
+        loop DllCall("GetMenuItemCount", "Ptr", menu, "Int") {
+            text := MenuItemText(menu, A_Index - 1)
+            if (text = "")
+                continue   ; a separator
+            names .= (names = "" ? "" : ", ") . text
+            if (found < 0 && text = name)   ; = ignores case
+                found := A_Index - 1
+        }
+        where := (i > 1) ? " under '" . path[i - 1] . "'" : ""
+        if (found < 0)
+            throw Error("RAM's menu has no '" . name . "'" . where . ". Its items: " . names)
+        if (i < path.Length) {
+            menu := DllCall("GetSubMenu", "Ptr", menu, "Int", found, "Ptr")
+            if !menu
+                throw Error("RAM's menu item '" . name . "'" . where . " has no submenu.")
+        } else {
+            id := DllCall("GetMenuItemID", "Ptr", menu, "Int", found, "UInt")
+            if (id = 0xFFFFFFFF)
+                throw Error("RAM's menu item '" . name . "'" . where . " opens a submenu, not a command.")
+            PostMessage(0x111, id, 0, , "ahk_id " . hwnd)   ; WM_COMMAND
+        }
+    }
+}
+
+; The text of a menu item (by position) as RunRamMenu compares it, or "" for a separator.
+MenuItemText(menu, pos) {
+    len := DllCall("GetMenuString", "Ptr", menu, "UInt", pos, "Ptr", 0, "Int", 0, "UInt", 0x400, "Int")  ; MF_BYPOSITION
+    if (len <= 0)
+        return ""
+    buf := Buffer((len + 1) * 2, 0)
+    DllCall("GetMenuString", "Ptr", menu, "UInt", pos, "Ptr", buf, "Int", len + 1, "UInt", 0x400, "Int")
+    text := StrGet(buf)
+    if (tab := InStr(text, "`t"))
+        text := SubStr(text, 1, tab - 1)
+    text := StrReplace(StrReplace(StrReplace(text, "&&", Chr(1)), "&"), Chr(1), "&")
+    return Trim(RegExReplace(text, "(\.\.\.|" . Chr(0x2026) . ")$"))   ; "..." or an ellipsis
+}
+
+; Logs every control in win: its ClassNN, position, text, and items when it is a list that
+; can be read (a list box, combo box or list view). Temporary, see above.
+LogControls(win, label) {
+    try {
+        for ctl in WinGetControls(win) {
+            line := label . " control " . ctl
+            try {
+                ControlGetPos(&x, &y, &w, &h, ctl, win)
+                line .= " at " . x . "," . y . " size " . w . "x" . h
+            }
+            try line .= " text '" . SubStr(RegExReplace(ControlGetText(ctl, win), "[\r\n]+", " "), 1, 200) . "'"
+            try {
+                items := ControlGetItems(ctl, win)
+                list := ""
+                for item in items
+                    list .= (list = "" ? "" : " | ") . item
+                line .= " items (" . items.Length . "): " . SubStr(list, 1, 500)
+            }
+            if InStr(ctl, "SysListView") {
+                try line .= " rows: " . SubStr(RegExReplace(ListViewGetContent(, ctl, win), "\n", " | "), 1, 500)
+            }
+            WriteLog(line)
+        }
+    } catch Error as err {
+        WriteLog("Could not list the controls of the " . label . " (" . err.Message . ").")
+    }
 }
 
 WriteLog(Message) {

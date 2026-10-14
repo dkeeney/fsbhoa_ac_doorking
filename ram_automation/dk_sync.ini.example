@@ -9,6 +9,10 @@
 ; BaseDir      : NAS folder as mapped on this PC.
 ; GateRowsY    : comma-separated y-coordinates of the gate rows to select in RAM's
 ;                Action > Send Data Now dialog. Production: 122,142 (North Gates, South Gates).
+; GateAccounts : optional, recommended. The accounts those rows are, comma-separated, as RAM
+;                names them (production: North Gates,South Gates). The rows can only be clicked
+;                by position, so the script checks RAM's completion records against these
+;                names, and fails the push if RAM sent to another account.
 ;
 ; Optional, for the vehicle plugin, which reads RAM's Live Streaming Disk File
 ; (BaseDir\Live_<Environment>\stream.txt):
@@ -25,4 +29,5 @@ Environment=testbed
 ExpectedHost=testbed.fsbhoa.com
 BaseDir=Y:\Automation\DoorKing
 GateRowsY=122
+GateAccounts=WORKBENCH
 RamWatch=1

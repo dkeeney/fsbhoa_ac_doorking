@@ -118,8 +118,13 @@ class Fsbhoa_DoorKing_Push {
         if ( ! is_readable( $path ) ) {
             return $state;
         }
+        // The RAM PC replaces the file by a rename, so it can vanish between the check and the read
+        $lines = @file( $path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES );
+        if ( false === $lines ) {
+            return $state;
+        }
         $result = [];
-        foreach ( (array) file( $path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES ) as $line ) {
+        foreach ( $lines as $line ) {
             $parts = explode( '=', trim( $line ), 2 );
             if ( 2 === count( $parts ) ) {
                 $result[ strtolower( trim( $parts[0] ) ) ] = trim( $parts[1] );
