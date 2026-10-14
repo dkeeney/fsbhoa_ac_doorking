@@ -187,11 +187,26 @@ class Fsbhoa_DoorKing_Export {
     }
 
     /**
+     * SQL condition (on alias cr) for a credential the export sends: active and not expired.
+     * Valid through its expiry date, like the UHPPOTE controllers and the kiosk; a blank date
+     * never expires. An expired credential drops out at the next export (at the latest, the nightly one).
+     */
+    private function valid_credential_sql() {
+        global $wpdb;
+        return $wpdb->prepare(
+            "cr.status IN ('active', 'valid')
+                  AND ( cr.expiration_date IS NULL OR cr.expiration_date < '1000-01-01' OR DATE( cr.expiration_date ) >= %s )",
+            current_time( 'Y-m-d' )
+        );
+    }
+
+    /**
      * Consolidates cardholders by household so each home has one DoorKing RAM record.
      */
     private function export_households( $handle, $account, $sec_level ) {
         global $wpdb;
         $local_area_code = get_option( 'fsbhoa_dk_local_area_code', '661' );
+        $valid_sql       = $this->valid_credential_sql();
 
         $residents = $wpdb->get_results( "
             SELECT c.id, c.household_id, c.last_name, c.first_name, c.phone
@@ -228,7 +243,7 @@ class Fsbhoa_DoorKing_Export {
                 SELECT cr.credential_type, cr.credential_value
                 FROM ac_credentials cr
                 WHERE cr.cardholder_id IN ($id_list)
-                  AND cr.status IN ('active', 'valid')
+                  AND {$valid_sql}
                 ORDER BY cr.id ASC
             " );
 
@@ -239,7 +254,7 @@ class Fsbhoa_DoorKing_Export {
                     JOIN ac_vehicles v ON cr.vehicle_id = v.vehicle_id
                     JOIN ac_cardholders c ON c.id = cr.cardholder_id AND c.cardholder_status = 'active'
                     WHERE v.household_id = %d
-                      AND cr.status IN ('active', 'valid')
+                      AND {$valid_sql}
                     ORDER BY cr.id ASC
                 ", (int) $primary->household_id ) );
                 if ( ! empty( $veh_creds ) ) {
@@ -324,6 +339,7 @@ class Fsbhoa_DoorKing_Export {
 
     private function export_vendors( $handle, $account, $sec_level ) {
         global $wpdb;
+        $valid_sql = $this->valid_credential_sql();
 
         $vendors = $wpdb->get_results( "
             SELECT c.id, c.company, c.last_name, c.first_name
@@ -353,7 +369,7 @@ class Fsbhoa_DoorKing_Export {
                 SELECT cr.credential_type, cr.credential_value
                 FROM ac_credentials cr
                 WHERE cr.cardholder_id = %d
-                  AND cr.status IN ('active', 'valid')
+                  AND {$valid_sql}
                 ORDER BY cr.id ASC
             ", $ven->id ) );
 

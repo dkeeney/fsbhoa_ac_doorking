@@ -476,6 +476,7 @@ class FSBHOA_AC_DoorKing {
                     'credential_value' => $val,
                     'status'           => 'active',
                     'issue_date'       => current_time( 'Y-m-d' ),
+                    'expiration_date'  => '2099-12-31',
                 ] );
             }
         }
@@ -519,6 +520,7 @@ class FSBHOA_AC_DoorKing {
                     'credential_value' => $opt_in_submitted,
                     'status'           => 'active',
                     'issue_date'       => current_time( 'Y-m-d' ),
+                    'expiration_date'  => '2099-12-31',
                 ] );
             }
         }
@@ -677,7 +679,8 @@ class FSBHOA_AC_DoorKing {
                     'credential_type'  => $type_code,
                     'credential_value' => $val,
                     'status'           => $status,
-                    'issue_date'       => current_time( 'Y-m-d' )
+                    'issue_date'       => current_time( 'Y-m-d' ),
+                    'expiration_date'  => '2099-12-31'
                 ] );
             }
         } elseif ( $exists ) {
@@ -786,6 +789,7 @@ class FSBHOA_AC_DoorKing {
                         'credential_value' => $chosen_value,
                         'status'           => 'active',
                         'issue_date'       => current_time( 'Y-m-d' ),
+                        'expiration_date'  => '2099-12-31',
                     ] );
                 }
             }
@@ -855,6 +859,7 @@ class FSBHOA_AC_DoorKing {
                         'credential_value' => $household_val,
                         'status'           => 'active',
                         'issue_date'       => current_time( 'Y-m-d' ),
+                        'expiration_date'  => '2099-12-31',
                     ] );
                 }
             } elseif ( $existing_cred_id ) {
@@ -955,6 +960,7 @@ class FSBHOA_AC_DoorKing {
                         'credential_value' => $final_value,
                         'status'           => $final_status,
                         'issue_date'       => current_time( 'Y-m-d' ),
+                        'expiration_date'  => '2099-12-31',
                     ]
                 );
             }

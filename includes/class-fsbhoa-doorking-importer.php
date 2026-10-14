@@ -630,7 +630,8 @@ class Fsbhoa_DoorKing_Importer {
 					'credential_type'  => $type,
 					'credential_value' => $value,
 					'status'           => 'active',
-					'issue_date'       => current_time( 'Y-m-d' )
+					'issue_date'       => current_time( 'Y-m-d' ),
+					'expiration_date'  => '2099-12-31'
 				] );
 			}
 		} else {
