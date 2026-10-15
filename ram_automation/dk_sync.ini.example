@@ -6,6 +6,9 @@
 ;                and must match env= in the trigger file.
 ; ExpectedHost : host name of the Access Control server allowed to trigger this PC
 ;                (testbed.fsbhoa.com or the production host). Must match host= in the trigger file.
+;                Not needed with Imports=0.
+; Imports      : optional. 0 turns off the import (the push from the server), so only the RAM
+;                watch below runs, e.g. on a RAM PC before pushes go to it. Default 1.
 ; BaseDir      : NAS folder as mapped on this PC.
 ; GateAccounts : optional. The script sends to every account in RAM's Send Data Now list and,
 ;                by default, waits for each to report success. If RAM also lists an account

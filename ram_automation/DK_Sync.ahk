@@ -30,7 +30,10 @@ if !FileExist(IniFile) {
 }
 
 global Environment  := StrLower(ReadRequired("Environment"))
-global ExpectedHost := StrLower(ReadRequired("ExpectedHost"))
+; Optional: Imports=0 turns off the import (the push from the server), so only the RAM watch
+; runs. For a RAM PC that should keep RAM running for the vehicle plugin before pushes go to it.
+global Imports      := Trim(IniRead(IniFile, "DK_Sync", "Imports", "1")) != "0"
+global ExpectedHost := Imports ? StrLower(ReadRequired("ExpectedHost")) : ""
 global BaseDir      := ReadRequired("BaseDir")
 ; Optional: the accounts that must confirm each send, in RAM's names. Every account in RAM is
 ; sent to (TickAllAccounts) and, by default, every one must report success. With GateAccounts
@@ -83,13 +86,17 @@ global LogFile     := LogDir . "\automation_" . Environment . ".log"
 global RamWinTitle := "ahk_class DoorKing32AppClass ahk_exe DoorKing32.exe"
 
 ; Ensure directories exist on startup
-if !DirExist(WatchDir)
+if Imports && !DirExist(WatchDir)
     DirCreate(WatchDir)
 if !DirExist(LogDir)
     DirCreate(LogDir)
 
-WriteLog("AHK Sync Script Started (" . Environment . ", accepting triggers from " . ExpectedHost . "). Watching " . WatchDir)
-SetTimer(WatchFolder, 3000)
+if Imports {
+    WriteLog("AHK Sync Script Started (" . Environment . ", accepting triggers from " . ExpectedHost . "). Watching " . WatchDir)
+    SetTimer(WatchFolder, 3000)
+} else {
+    WriteLog("AHK Sync Script Started (" . Environment . "). Imports=0: not watching " . WatchDir . "; no imports.")
+}
 
 if RamWatch {
     WriteLog("RAM watch on: heartbeat in " . StatusFile)
