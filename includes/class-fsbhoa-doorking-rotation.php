@@ -215,7 +215,13 @@ class Fsbhoa_DoorKing_Rotation {
         $current_code  = $this->get_credential_value( $curr_id );
         $previous_code = $this->get_credential_value( $prev_id );
 
-        $this->notify_website_api( $current_code, $previous_code, $next_code );
+        // Not while Send to RAM is off: the gates don't get the new codes, so the website
+        // keeps the last ones it was sent until sending is back on (posted daily)
+        if ( Fsbhoa_DoorKing_Export::sending_enabled() ) {
+            $this->notify_website_api( $current_code, $previous_code, $next_code );
+        } else {
+            error_log( 'DoorKing Rotation: not posting the codes to the website; Send to RAM is turned off.' );
+        }
 
         // -------------------------------------------------------------
         // 7. Trigger RAM export if credentials changed

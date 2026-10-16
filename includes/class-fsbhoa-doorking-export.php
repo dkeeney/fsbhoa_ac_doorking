@@ -13,6 +13,9 @@ class Fsbhoa_DoorKing_Export {
     const CSV_FILE_NAME  = 'updates.csv';
     const FLAG_FILE_NAME = 'import_now.flag';
     const ENVIRONMENTS   = [ 'testbed', 'production' ];
+    // "Send to RAM" on the settings page. Off: no export reaches RAM (pushes, the nightly
+    // export, rotations, Resend Everything), e.g. on a testbed no RAM PC imports for.
+    const SEND_OPTION    = 'fsbhoa_dk_send_to_ram';
 
     // DoorKing 1838-010 Rev AB card memory limit
     const MAX_CARDS = 3000;
@@ -36,6 +39,13 @@ class Fsbhoa_DoorKing_Export {
     public static function get_environment() {
         $env = defined( 'FSBHOA_AC_ENVIRONMENT' ) ? strtolower( trim( (string) FSBHOA_AC_ENVIRONMENT ) ) : '';
         return in_array( $env, self::ENVIRONMENTS, true ) ? $env : '';
+    }
+
+    /**
+     * Whether exports are handed to RAM ("Send to RAM"; on unless turned off).
+     */
+    public static function sending_enabled() {
+        return '0' !== (string) get_option( self::SEND_OPTION, '1' );
     }
 
     public static function default_sync_dir() {
@@ -112,6 +122,12 @@ class Fsbhoa_DoorKing_Export {
     }
 
     public function generate_export() {
+        if ( ! self::sending_enabled() ) {
+            $message = 'DoorKing export skipped: Send to RAM is turned off in the DoorKing settings.';
+            error_log( $message );
+            return new WP_Error( 'sending_off', $message );
+        }
+
         $csv_path    = get_option( 'fsbhoa_dk_csv_path', self::default_csv_path() );
         $lock_path   = get_option( 'fsbhoa_dk_lock_path', self::default_flag_path() );
 

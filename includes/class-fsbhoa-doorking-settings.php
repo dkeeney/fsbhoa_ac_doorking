@@ -33,6 +33,15 @@ class Fsbhoa_DoorKing_Settings {
         // --- Section: RAM Sync Settings ---
         add_settings_section('fsbhoa_dk_sync_section', 'RAM Software Sync Settings', null, $page_slug);
 
+        // On/off for every export to RAM
+        add_settings_field('fsbhoa_dk_send_to_ram_field', 'Send to RAM', array($this, 'render_field_callback'), $page_slug, 'fsbhoa_dk_sync_section', [
+            'id'      => Fsbhoa_DoorKing_Export::SEND_OPTION,
+            'type'    => 'checkbox',
+            'default' => '1',
+            'desc'    => 'Hand changes to the RAM PC (pushes, the nightly export, vendor-code rotations, Resend Everything). Turn off when no RAM PC imports for this server, or RAM must be left alone. Turning it off withdraws an export RAM has not picked up yet; changes made while it is off show on the banner once it is back on. While off, rotations do not post codes to the website.',
+        ]);
+        register_setting($option_group, Fsbhoa_DoorKing_Export::SEND_OPTION, 'sanitize_text_field');
+
         // RAM Version Selector
         add_settings_field('fsbhoa_dk_ram_version_field', 'DoorKing RAM Version', array($this, 'render_field_callback'), $page_slug, 'fsbhoa_dk_sync_section', [
             'id'      => 'fsbhoa_dk_ram_version',
@@ -325,8 +334,10 @@ class Fsbhoa_DoorKing_Settings {
         }
 
         // Handle checkboxes: if not in POST, set to '0'
-        if ( ! in_array( 'fsbhoa_dk_enable_rotation', $saved_keys, true ) ) {
-            update_option( 'fsbhoa_dk_enable_rotation', '0' );
+        foreach ( [ 'fsbhoa_dk_enable_rotation', Fsbhoa_DoorKing_Export::SEND_OPTION ] as $checkbox ) {
+            if ( ! in_array( $checkbox, $saved_keys, true ) ) {
+                update_option( $checkbox, '0' );
+            }
         }
 
         // -- HANDLE VENDOR ACCESS CODES --

@@ -52,6 +52,35 @@ class Fsbhoa_DoorKing_Push {
 
         // "Resend Everything to DoorKing" on the settings page
         add_action( 'wp_ajax_fsbhoa_dk_resend_all', [ $this, 'ajax_resend_all' ] );
+
+        // "Send to RAM" turned off: withdraw an export RAM hasn't picked up yet
+        add_action( 'update_option_' . Fsbhoa_DoorKing_Export::SEND_OPTION, [ $this, 'sending_changed' ] );
+        add_action( 'add_option_' . Fsbhoa_DoorKing_Export::SEND_OPTION, [ $this, 'sending_changed' ] );
+    }
+
+    /**
+     * When "Send to RAM" is turned off, removes the trigger file of an export the RAM PC
+     * hasn't picked up, so it isn't imported later (when DK_Sync.ahk next runs), and stops
+     * waiting for its result. RAM stays behind the database, so once sending is back on the
+     * banner shows the changes waiting. An export already picked up is left to finish.
+     */
+    public function sending_changed() {
+        if ( Fsbhoa_DoorKing_Export::sending_enabled() ) {
+            return;
+        }
+        $state = $this->state();
+        $flag  = get_option( 'fsbhoa_dk_lock_path', Fsbhoa_DoorKing_Export::default_flag_path() );
+        if ( ! $this->waiting( $state ) || ! file_exists( $flag ) ) {
+            return;
+        }
+        if ( ! @unlink( $flag ) ) {
+            error_log( 'FSBHOA DoorKing: Send to RAM turned off, but could not remove ' . $flag . '; RAM may still import that export.' );
+            return;
+        }
+        $state['exported_at'] = 0;
+        $state['result']      = [];
+        $this->save( $state );
+        error_log( 'FSBHOA DoorKing: Send to RAM turned off; withdrew the export RAM had not picked up (' . $flag . ').' );
     }
 
     private function state() {
@@ -167,6 +196,10 @@ class Fsbhoa_DoorKing_Push {
      * fsbhoa_push_to_controllers: export, if RAM is behind the database.
      */
     public function push() {
+        if ( ! Fsbhoa_DoorKing_Export::sending_enabled() ) {
+            error_log( 'FSBHOA DoorKing: push skipped; Send to RAM is turned off in the DoorKing settings.' );
+            return;
+        }
         $state = $this->refresh( $this->state() );
         if ( $this->waiting( $state ) && time() - $state['exported_at'] < self::IMPORT_TIMEOUT ) {
             error_log( 'FSBHOA DoorKing: push skipped; RAM is still importing the last export.' );
@@ -212,6 +245,11 @@ class Fsbhoa_DoorKing_Push {
      * DoorKing's entry on core's banner.
      */
     public function push_target( $targets ) {
+        if ( ! Fsbhoa_DoorKing_Export::sending_enabled() ) {
+            // Never holds the banner up; changes made meanwhile show once it's turned back on
+            $targets[] = [ 'id' => 'doorking', 'label' => 'DoorKing (RAM)', 'state' => 'done', 'message' => 'Send to RAM is turned off.' ];
+            return $targets;
+        }
         $state = $this->refresh( $this->state() );
         $age   = time() - (int) $state['exported_at'];
         $flag  = get_option( 'fsbhoa_dk_lock_path', Fsbhoa_DoorKing_Export::default_flag_path() );
