@@ -83,6 +83,11 @@ class FSBHOA_AC_DoorKing {
         require_once plugin_dir_path( __FILE__ ) . 'includes/class-fsbhoa-doorking-push.php';
         new Fsbhoa_DoorKing_Push( $export );
 
+        // Legacy RAM entries: RAM's tags and codes no cardholder holds yet, sent by the export
+        // until assigned or removed, and the check of a RAM export against the next push
+        require_once plugin_dir_path( __FILE__ ) . 'includes/class-fsbhoa-doorking-legacy.php';
+        new Fsbhoa_DoorKing_Legacy( $export );
+
         // Hook into the core plugin's UI for the cardholder edit page
         add_action( 'fsbhoa_render_credential_fields', [ $this, 'render_ui' ], 10, 2 );
 

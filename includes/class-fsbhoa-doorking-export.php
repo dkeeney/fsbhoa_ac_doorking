@@ -23,6 +23,7 @@ class Fsbhoa_DoorKing_Export {
     private $global_devices = [];
     private $global_pins    = [];
     private $global_names   = [];
+    private $global_dirs    = [];
 
     public function __construct() {
         add_action( 'fsbhoa_doorking_trigger_export', [ $this, 'generate_export' ] );
@@ -78,6 +79,7 @@ class Fsbhoa_DoorKing_Export {
         $this->global_devices = [];
         $this->global_pins    = [];
         $this->global_names   = [];
+        $this->global_dirs    = [];
 
         $raw_sec    = get_option( 'fsbhoa_dk_security_level', '01' );
         $sec_level  = str_pad( ! empty( $raw_sec ) ? $raw_sec : '01', 2, '0', STR_PAD_LEFT );
@@ -105,6 +107,9 @@ class Fsbhoa_DoorKing_Export {
 
         // 3. Export Vendors
         $this->export_vendors( $handle, $account, $sec_level );
+
+        // 4. Legacy RAM entries: values from RAM no cardholder holds yet (Fsbhoa_DoorKing_Legacy)
+        $this->export_legacy( $handle, $account, $sec_level );
 
         rewind( $handle );
         $csv = stream_get_contents( $handle );
@@ -275,7 +280,10 @@ class Fsbhoa_DoorKing_Export {
                     if ( '' === $val ) continue;
 
                     if ( 'DK_DIR_CODE' === $type ) {
-                        if ( empty( $dir_code ) ) $dir_code = str_pad( $val, 4, '0', STR_PAD_LEFT );
+                        if ( empty( $dir_code ) ) {
+                            $dir_code = str_pad( $val, 4, '0', STR_PAD_LEFT );
+                            $this->global_dirs[ $dir_code ] = true;
+                        }
                     } elseif ( 'DK_ENTRY_CODE' === $type ) {
                         $clean_gate = str_pad( $val, 4, '0', STR_PAD_LEFT );
                         if ( ! isset( $this->global_pins[ $clean_gate ] ) ) {
@@ -424,6 +432,79 @@ class Fsbhoa_DoorKing_Export {
                 $this->emit_ram_row(
                     $handle, $account, $chunk_name, 'Y', '', '',
                     '', $chunk_ent, $sec_level, $chunk, 'Y'
+                );
+            }
+        }
+    }
+
+    /**
+     * Legacy RAM entries (class-fsbhoa-doorking-legacy.php): tags and codes RAM held that no
+     * cardholder holds yet, sent as RAM had them, last. A value already sent for a cardholder
+     * is skipped, so a value that has since been given to someone goes out only for them.
+     * The directory listing (H, phone) goes out only with the entry's directory code.
+     */
+    private function export_legacy( $handle, $account, $sec_level ) {
+        if ( ! class_exists( 'Fsbhoa_DoorKing_Legacy' ) ) {
+            return;
+        }
+        foreach ( Fsbhoa_DoorKing_Legacy::get_export_entries() as $item ) {
+            $entry       = $item['entry'];
+            $dir_code    = '';
+            $ent_val     = '';
+            $device_list = [];
+
+            foreach ( $item['values'] as $v ) {
+                $val = (string) $v->value;
+                if ( '' === $val ) {
+                    continue;
+                }
+                if ( 'dir' === $v->value_kind ) {
+                    if ( '' === $dir_code && ! isset( $this->global_dirs[ $val ] ) ) {
+                        $dir_code = $val;
+                        $this->global_dirs[ $val ] = true;
+                    }
+                } elseif ( 'ent' === $v->value_kind ) {
+                    if ( isset( $this->global_pins[ $val ] ) || isset( $this->global_devices[ '0' . $val ] ) ) {
+                        continue;
+                    }
+                    $this->global_pins[ $val ] = true;
+                    if ( '' === $ent_val ) {
+                        $ent_val = $val;
+                    } else {
+                        $this->global_devices[ '0' . $val ] = true;
+                        $device_list[] = '0' . $val;
+                    }
+                } else {
+                    // A device 0xxxx is the same as gate code xxxx (see export_households)
+                    $pin = ( '0' === $val[0] ) ? substr( $val, 1 ) : null;
+                    if ( isset( $this->global_devices[ $val ] ) || ( null !== $pin && isset( $this->global_pins[ $pin ] ) ) ) {
+                        continue;
+                    }
+                    $this->global_devices[ $val ] = true;
+                    if ( null !== $pin ) {
+                        $this->global_pins[ $pin ] = true;
+                    }
+                    $device_list[] = $val;
+                }
+            }
+
+            if ( '' === $dir_code && '' === $ent_val && empty( $device_list ) ) {
+                continue;
+            }
+
+            $listed = ( '' !== $dir_code );
+            $h_val  = $listed ? $entry->h_flag : 'Y';
+            $aac    = $listed ? $entry->aac : '';
+            $phone  = $listed ? $entry->phone : '';
+            $vendor = ( 'Y' === $entry->is_vendor ) ? 'Y' : 'N';
+            $name   = '' !== trim( $entry->ram_name ) ? $entry->ram_name : 'RAM ENTRY';
+
+            $chunks = ! empty( $device_list ) ? array_chunk( $device_list, 26 ) : [ [] ];
+            foreach ( $chunks as $idx => $chunk ) {
+                $this->emit_ram_row(
+                    $handle, $account, $this->get_unique_ram_name( $name ),
+                    ( 0 === $idx ) ? $h_val : 'Y', ( 0 === $idx ) ? $aac : '', ( 0 === $idx ) ? $phone : '',
+                    ( 0 === $idx ) ? $dir_code : '', ( 0 === $idx ) ? $ent_val : '', $sec_level, $chunk, $vendor
                 );
             }
         }
