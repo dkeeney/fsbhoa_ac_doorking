@@ -24,6 +24,8 @@ class Fsbhoa_DoorKing_Export {
     private $global_pins    = [];
     private $global_names   = [];
     private $global_dirs    = [];
+    // Gate codes left out of the last build: [ who => [ codes ] ] (one gate code per RAM row)
+    private $unsent_gate_codes = [];
 
     public function __construct() {
         add_action( 'fsbhoa_doorking_trigger_export', [ $this, 'generate_export' ] );
@@ -80,6 +82,7 @@ class Fsbhoa_DoorKing_Export {
         $this->global_pins    = [];
         $this->global_names   = [];
         $this->global_dirs    = [];
+        $this->unsent_gate_codes = [];
 
         $raw_sec    = get_option( 'fsbhoa_dk_security_level', '01' );
         $sec_level  = str_pad( ! empty( $raw_sec ) ? $raw_sec : '01', 2, '0', STR_PAD_LEFT );
@@ -162,6 +165,9 @@ class Fsbhoa_DoorKing_Export {
         $built = $this->build_csv();
         if ( is_wp_error( $built ) ) {
             return $built;
+        }
+        foreach ( $this->unsent_gate_codes as $who => $codes ) {
+            error_log( sprintf( 'FSBHOA DoorKing export: %s has more than one gate code; sent only the first, not %s.', $who, implode( ', ', $codes ) ) );
         }
 
         $tmp_file = $csv_path . '.tmp';
@@ -253,12 +259,15 @@ class Fsbhoa_DoorKing_Export {
                 ORDER BY cr.id ASC
             " );
 
+            // A vehicle's tags belong to the household's vehicle, not to the member whose record
+            // holds them: they go out while the household has a current member, even if that
+            // member is archived (a deceased spouse stays in the household; 2026-11-15, the user)
             if ( ! empty( $primary->household_id ) ) {
                 $veh_creds = $wpdb->get_results( $wpdb->prepare( "
                     SELECT cr.credential_type, cr.credential_value
                     FROM ac_credentials cr
                     JOIN ac_vehicles v ON cr.vehicle_id = v.vehicle_id
-                    JOIN ac_cardholders c ON c.id = cr.cardholder_id AND c.cardholder_status = 'active'
+                    JOIN ac_cardholders c ON c.id = cr.cardholder_id AND c.cardholder_status IN ('active', 'archived')
                     WHERE v.household_id = %d
                       AND {$valid_sql}
                     ORDER BY cr.id ASC
@@ -286,15 +295,15 @@ class Fsbhoa_DoorKing_Export {
                         }
                     } elseif ( 'DK_ENTRY_CODE' === $type ) {
                         $clean_gate = str_pad( $val, 4, '0', STR_PAD_LEFT );
-                        if ( ! isset( $this->global_pins[ $clean_gate ] ) ) {
-                            $this->global_pins[ $clean_gate ] = true;
+                        if ( ! isset( $this->global_pins[ $clean_gate ] ) && ! in_array( $clean_gate, $gate_codes, true ) ) {
                             $gate_codes[] = $clean_gate;
                         }
                     } elseif ( 'DK_DIR_OPT_IN' === $type ) {
                         if ( '1' === (string) $val || 'Y' === strtoupper( (string) $val ) ) $opt_in = true;
                     } elseif ( in_array( $type, [ 'DK_WINDSHIELD', 'RFID', 'WIEGAND_26' ], true ) ) {
                         $clean_dev = str_pad( substr( $val, -5 ), 5, '0', STR_PAD_LEFT );
-                        if ( ! isset( $this->global_devices[ $clean_dev ] ) ) {
+                        // A device starting with 0 is a fob, which no reader at the gates reads
+                        if ( '0' !== $clean_dev[0] && ! isset( $this->global_devices[ $clean_dev ] ) ) {
                             $this->global_devices[ $clean_dev ] = true;
                             $device_list[] = $clean_dev;
                         }
@@ -302,17 +311,7 @@ class Fsbhoa_DoorKing_Export {
                 }
             }
 
-            $ent_val = '';
-            if ( ! empty( $gate_codes ) ) {
-                $ent_val = array_shift( $gate_codes );
-                foreach ( $gate_codes as $extra_code ) {
-                    $pad_code = '0' . $extra_code;
-                    if ( ! isset( $this->global_devices[ $pad_code ] ) ) {
-                        $this->global_devices[ $pad_code ] = true;
-                        $device_list[] = $pad_code;
-                    }
-                }
-            }
+            $ent_val = $this->take_gate_code( $gate_codes, 'household of ' . $row_name );
 
             $h_val = $opt_in ? 'N' : 'Y';
             $aac   = '';
@@ -393,13 +392,13 @@ class Fsbhoa_DoorKing_Export {
 
                     if ( 'DK_ENTRY_CODE' === $type ) {
                         $clean_gate = str_pad( $val, 4, '0', STR_PAD_LEFT );
-                        if ( ! isset( $this->global_pins[ $clean_gate ] ) ) {
-                            $this->global_pins[ $clean_gate ] = true;
+                        if ( ! isset( $this->global_pins[ $clean_gate ] ) && ! in_array( $clean_gate, $gate_codes, true ) ) {
                             $gate_codes[] = $clean_gate;
                         }
                     } elseif ( in_array( $type, [ 'DK_WINDSHIELD', 'RFID', 'WIEGAND_26' ], true ) ) {
                         $clean_dev = str_pad( substr( $val, -5 ), 5, '0', STR_PAD_LEFT );
-                        if ( ! isset( $this->global_devices[ $clean_dev ] ) ) {
+                        // A device starting with 0 is a fob, which no reader at the gates reads
+                        if ( '0' !== $clean_dev[0] && ! isset( $this->global_devices[ $clean_dev ] ) ) {
                             $this->global_devices[ $clean_dev ] = true;
                             $device_list[] = $clean_dev;
                         }
@@ -407,17 +406,7 @@ class Fsbhoa_DoorKing_Export {
                 }
             }
 
-            $ent_val = '';
-            if ( ! empty( $gate_codes ) ) {
-                $ent_val = array_shift( $gate_codes );
-                foreach ( $gate_codes as $extra_code ) {
-                    $pad_code = '0' . $extra_code;
-                    if ( ! isset( $this->global_devices[ $pad_code ] ) ) {
-                        $this->global_devices[ $pad_code ] = true;
-                        $device_list[] = $pad_code;
-                    }
-                }
-            }
+            $ent_val = $this->take_gate_code( $gate_codes, 'vendor ' . $clean_name );
 
             // GHOST GUARD: Safely drops vendors with no active gate PINs or Windshield tags
             if ( empty( $ent_val ) && empty( $device_list ) ) {
@@ -435,6 +424,24 @@ class Fsbhoa_DoorKing_Export {
                 );
             }
         }
+    }
+
+    /**
+     * A RAM row holds one gate code (ENT). Returns the first of $gate_codes and marks it sent;
+     * any others are left out and noted in $unsent_gate_codes (a household or vendor should
+     * have one). Until 2026-11-11 the others went out as devices 0xxxx, but a device starting
+     * with 0 is a fob, and no reader at the gates reads fobs.
+     */
+    private function take_gate_code( array $gate_codes, $who ) {
+        if ( empty( $gate_codes ) ) {
+            return '';
+        }
+        $ent_val = array_shift( $gate_codes );
+        $this->global_pins[ $ent_val ] = true;
+        if ( ! empty( $gate_codes ) ) {
+            $this->unsent_gate_codes[ $who ] = $gate_codes;
+        }
+        return $ent_val;
     }
 
     /**
@@ -464,26 +471,18 @@ class Fsbhoa_DoorKing_Export {
                         $this->global_dirs[ $val ] = true;
                     }
                 } elseif ( 'ent' === $v->value_kind ) {
-                    if ( isset( $this->global_pins[ $val ] ) || isset( $this->global_devices[ '0' . $val ] ) ) {
+                    // One gate code per RAM row
+                    if ( '' !== $ent_val || isset( $this->global_pins[ $val ] ) ) {
                         continue;
                     }
                     $this->global_pins[ $val ] = true;
-                    if ( '' === $ent_val ) {
-                        $ent_val = $val;
-                    } else {
-                        $this->global_devices[ '0' . $val ] = true;
-                        $device_list[] = '0' . $val;
-                    }
+                    $ent_val = $val;
                 } else {
-                    // A device 0xxxx is the same as gate code xxxx (see export_households)
-                    $pin = ( '0' === $val[0] ) ? substr( $val, 1 ) : null;
-                    if ( isset( $this->global_devices[ $val ] ) || ( null !== $pin && isset( $this->global_pins[ $pin ] ) ) ) {
+                    // A device starting with 0 is a fob, which no reader at the gates reads
+                    if ( '0' === $val[0] || isset( $this->global_devices[ $val ] ) ) {
                         continue;
                     }
                     $this->global_devices[ $val ] = true;
-                    if ( null !== $pin ) {
-                        $this->global_pins[ $pin ] = true;
-                    }
                     $device_list[] = $val;
                 }
             }

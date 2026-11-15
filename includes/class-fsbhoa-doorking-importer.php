@@ -13,6 +13,8 @@ class Fsbhoa_DoorKing_Importer {
 	private $is_dry_run = false;
 	private $log_only_errors = false;
 	private $dry_run_log = [];
+	// Directory and gate codes set by this run: [ cardholder_id => [ type => [ value, row ] ] ]
+	private $run_codes = [];
 
 	// Curated explicit alias mapping for corner cases (DoorKing string => WP Target Name)
 	private $explicit_aliases = [
@@ -163,10 +165,12 @@ class Fsbhoa_DoorKing_Importer {
 				continue;
 			}
 
+            // Current cardholders first, so a current person wins over a former record
             $query = "
                 SELECT id, household_id, property_id, first_name, last_name, cardholder_status
                 FROM ac_cardholders
                 WHERE last_name LIKE %s
+                ORDER BY ( cardholder_status = 'active' ) DESC, id ASC
             ";
 			$token_candidates = $wpdb->get_results( $wpdb->prepare( $query, $token . '%' ) );
 			if ( ! empty( $token_candidates ) ) {
@@ -277,6 +281,7 @@ class Fsbhoa_DoorKing_Importer {
 		$this->is_dry_run      = isset( $_POST['dry_run'] ) ? true : false;
 		$this->log_only_errors = isset( $_POST['log_only_errors'] ) ? true : false;
 		$this->dry_run_log     = [];
+		$this->run_codes       = [];
 
 		if ( $this->is_dry_run ) {
 			$this->dry_run_log[] = "=== STARTING DRY RUN " . ( $this->log_only_errors ? "(EXCEPTIONS ONLY)" : "(FULL LOG)" ) . " ===";
@@ -376,6 +381,7 @@ class Fsbhoa_DoorKing_Importer {
                      "SELECT id, household_id, property_id, first_name, last_name, cardholder_status
                       FROM ac_cardholders
                       WHERE first_name LIKE %s AND last_name LIKE %s
+                      ORDER BY ( cardholder_status = 'active' ) DESC, id ASC
                       LIMIT 1",
                      '%' . $alias['first'] . '%',
                      '%' . $alias['last'] . '%'
@@ -384,12 +390,13 @@ class Fsbhoa_DoorKing_Importer {
                     $match_method = "Explicit Alias Map";
                 }
             }
-            // 2. Phone Match across any status
-            if ( ! empty( $full_phone ) ) {
+            // 2. Phone Match across any status (an explicit alias wins)
+            if ( ! $cardholder && ! empty( $full_phone ) ) {
                 $cardholder = $wpdb->get_row( $wpdb->prepare(
                     "SELECT id, household_id, property_id, first_name, last_name, cardholder_status
                      FROM ac_cardholders
                      WHERE phone = %s
+                     ORDER BY ( cardholder_status = 'active' ) DESC, id ASC
                      LIMIT 1",
                     $full_phone
                 ) );
@@ -424,14 +431,18 @@ class Fsbhoa_DoorKing_Importer {
 					) );
 				}
 
+				// Only a current survivor with the same last name: a new owner of the property
+				// is another family, and must not get the former resident's codes
 				if ( $archived_match && ! empty( $archived_match->property_id ) ) {
 					$current_resident = $wpdb->get_row( $wpdb->prepare(
 						"SELECT id, household_id, property_id, first_name, last_name, cardholder_status
 						 FROM ac_cardholders
 						 WHERE property_id = %d
-						   AND cardholder_status != 'archived'
+						   AND cardholder_status = 'active'
+						   AND last_name = %s
 						 LIMIT 1",
-						$archived_match->property_id
+						$archived_match->property_id,
+						$archived_match->last_name
 					) );
 
 					if ( $current_resident ) {
@@ -446,6 +457,30 @@ class Fsbhoa_DoorKing_Importer {
 					$this->dry_run_log[] = "[SKIP / NOT FOUND] Resident: '{$resident_name}' | Phone: '{$phone_raw}'";
 				}
 				continue;
+			}
+
+			// A match on a former resident (archived or purged; often by an old phone number) goes
+			// to a current resident of the same property with the same family name, if there is
+			// one: a surviving spouse, or the same person's newer record. Former residents have
+			// their own households unless they share a current resident's family name (migration.sql
+			// step 3b), so otherwise the codes stay with them.
+			if ( 'active' !== ( $cardholder->cardholder_status ?? 'active' ) && ! empty( $cardholder->property_id ) ) {
+				$family  = strtolower( strtok( strtok( trim( (string) $cardholder->last_name ), ',' ), ' ' ) );
+				$current = $wpdb->get_row( $wpdb->prepare(
+					"SELECT id, household_id, property_id, first_name, last_name, cardholder_status
+					 FROM ac_cardholders
+					 WHERE property_id = %d
+					   AND cardholder_status = 'active'
+					   AND LOWER( SUBSTRING_INDEX( SUBSTRING_INDEX( TRIM( last_name ), ',', 1 ), ' ', 1 ) ) = %s
+					 ORDER BY id ASC
+					 LIMIT 1",
+					$cardholder->property_id, $family
+				) );
+				if ( $current ) {
+					$this->dry_run_log[] = "[CURRENT RESIDENT] '{$resident_name}' matched {$cardholder->first_name} {$cardholder->last_name} (ID: {$cardholder->id}, {$cardholder->cardholder_status}) [via {$match_method}]; using {$current->first_name} {$current->last_name} (ID: {$current->id}), who lives there now.";
+					$cardholder    = $current;
+					$match_method .= ' -> current resident at the property';
+				}
 			}
 
 			$cardholder_id = absint( $cardholder->id );
@@ -472,9 +507,16 @@ class Fsbhoa_DoorKing_Importer {
 			$dir_code = trim( $data[ $col_map['DIR'] ] ?? '' );
 			$ent_code = trim( $data[ $col_map['ENT'] ] ?? '' );
 
-            // Get household members to distribute codes
+            // Get household members to distribute codes: current members only. A matched former
+            // resident (archived or purged) keeps the codes, unsent: they must not reach whoever
+            // lives at the property now, even when migration.sql step 3b put that former resident
+            // in the current household (same family name).
             $household_members = [];
-            if ( ! empty( $household_id ) && $household_id !== 'DRY_RUN_HH_ID' ) {
+            if ( 'active' !== ( $cardholder->cardholder_status ?? 'active' ) ) {
+                if ( $dir_code || $ent_code ) {
+                    $this->dry_run_log[] = "[FORMER RESIDENT] '{$resident_name}' matched {$cardholder->first_name} {$cardholder->last_name} (ID: {$cardholder_id}, {$cardholder->cardholder_status}), so the codes stay with them and aren't sent.";
+                }
+            } elseif ( ! empty( $household_id ) && $household_id !== 'DRY_RUN_HH_ID' ) {
                 $household_members = $wpdb->get_col( $wpdb->prepare(
                     "SELECT id FROM ac_cardholders WHERE household_id = %d AND cardholder_status = 'active'",
                     $household_id
@@ -486,15 +528,14 @@ class Fsbhoa_DoorKing_Importer {
             // Assign the exact same DIR and ENTRY codes to all members of the household
             foreach ( $household_members as $m_id ) {
                 if ( ! empty( $dir_code ) ) {
-                    $this->upsert_credential( $m_id, null, 'DK_DIR_CODE', $dir_code );
-                    if ( ! empty( $full_phone ) ) {
+                    if ( $this->assign_code( $m_id, 'DK_DIR_CODE', $dir_code, $resident_name ) && ! empty( $full_phone ) ) {
                         $this->upsert_credential( $m_id, null, 'DK_DIR_OPT_IN', '1' );
                     }
                 }
-            
+
                 if ( ! empty( $ent_code ) ) {
                     $clean_ent = preg_replace( '/[^0-9]/', '', $ent_code );
-                    $this->upsert_credential( $m_id, null, 'DK_ENTRY_CODE', $clean_ent );
+                    $this->assign_code( $m_id, 'DK_ENTRY_CODE', $clean_ent, $resident_name );
                 }
             }
 
@@ -603,6 +644,26 @@ class Fsbhoa_DoorKing_Importer {
 	 * Personal codes are matched 1:1 on (cardholder_id, credential_type).
 	 * Windshield tags are matched globally on (credential_type, credential_value).
 	 */
+	/**
+	 * Sets a directory or gate code, unless an earlier RAM row of this import already gave the
+	 * cardholder a different one: that is kept and the conflict logged (until 2026-11-11 the
+	 * later row silently replaced it). Returns whether the code was set.
+	 */
+	private function assign_code( $cardholder_id, $type, $value, $resident_name ) {
+		$prev = $this->run_codes[ $cardholder_id ][ $type ] ?? null;
+		if ( null !== $prev && $prev['value'] !== (string) $value ) {
+			$message = "[CONFLICT] '{$resident_name}' has {$type} {$value} for cardholder ID {$cardholder_id}, who already got {$prev['value']} from '{$prev['row']}'. Kept {$prev['value']}.";
+			$this->dry_run_log[] = $message;
+			if ( ! $this->is_dry_run ) {
+				error_log( 'FSBHOA DoorKing import: ' . $message );
+			}
+			return false;
+		}
+		$this->run_codes[ $cardholder_id ][ $type ] = [ 'value' => (string) $value, 'row' => $resident_name ];
+		$this->upsert_credential( $cardholder_id, null, $type, $value );
+		return true;
+	}
+
 	private function upsert_credential( $cardholder_id, $vehicle_id, $type, $value ) {
 		global $wpdb;
 

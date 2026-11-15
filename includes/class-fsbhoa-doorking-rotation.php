@@ -98,6 +98,11 @@ class Fsbhoa_DoorKing_Rotation {
     public function generate_unique_pin() {
         global $wpdb;
         $active_pins = $wpdb->get_col( "SELECT credential_value FROM ac_credentials WHERE credential_type = 'DK_ENTRY_CODE' AND status = 'active'" );
+        // Gate codes a DoorKing Legacy entry keeps in RAM are taken too
+        $suppress    = $wpdb->suppress_errors( true );
+        $legacy_pins = $wpdb->get_col( "SELECT value FROM " . Fsbhoa_DoorKing_Legacy::VALUES_TABLE . " WHERE value_kind = 'ent'" );
+        $wpdb->suppress_errors( $suppress );
+        $active_pins = array_merge( (array) $active_pins, (array) $legacy_pins );
 
         $attempts = 0;
         do {

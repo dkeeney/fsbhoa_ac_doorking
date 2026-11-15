@@ -164,7 +164,8 @@ class FSBHOA_AC_DoorKing {
                 $candidate
             ) );
 
-            if ( ! $exists ) {
+            // Nor one a DoorKing Legacy entry keeps in RAM
+            if ( ! $exists && null === $this->legacy_holder( $type_code, $candidate ) ) {
                 return $candidate;
             }
         }
@@ -184,7 +185,8 @@ class FSBHOA_AC_DoorKing {
         // -------------------------------------------------------------
         // READ-ONLY / SUMMARY CARD MODE
         // -------------------------------------------------------------
-        if ( ! $is_edit_mode ) {
+        // Core's summary card passes 'summary' (truthy), so test for it explicitly
+        if ( ! $is_edit_mode || 'summary' === $is_edit_mode ) {
             $entry_code = $wpdb->get_var( $wpdb->prepare(
                 "SELECT credential_value FROM ac_credentials WHERE cardholder_id = %d AND credential_type = 'DK_ENTRY_CODE' AND credential_value != '' LIMIT 1",
                 $cardholder_id
@@ -209,7 +211,7 @@ class FSBHOA_AC_DoorKing {
 
             if ( ! empty( $dir_code ) ) {
                 echo '<span style="padding: 4px 8px; border-radius: 4px; font-size: 12px; border: 1px solid #ccd0d4; background: #f6f7f7;">';
-                echo '<strong@Dir Code:></strong> <code>[ ' . esc_html( $dir_code ) . ' ]></code>';
+                echo '<strong>Dir Code:</strong> <code>[ ' . esc_html( $dir_code ) . ' ]</code>';
                 echo '</span>';
             }
 
@@ -233,7 +235,7 @@ class FSBHOA_AC_DoorKing {
 
         if ( $cardholder_id > 0 ) {
             $query = $wpdb->prepare(
-                "SELECT credential_type, credential_value, status
+                "SELECT id, credential_type, credential_value, status
                  FROM ac_credentials
                  WHERE cardholder_id = %d
                    AND (vehicle_id IS NULL OR vehicle_id = 0)
@@ -244,6 +246,7 @@ class FSBHOA_AC_DoorKing {
             foreach ( $results as $row ) {
                 if ( 'DK_ENTRY_CODE' === $row->credential_type ) {
                     $all_pins[] = [
+                        'id'     => (int) $row->id,
                         'code'   => $row->credential_value,
                         'status' => $row->status,
                     ];
@@ -267,32 +270,69 @@ class FSBHOA_AC_DoorKing {
                             <?php esc_html_e( 'Gate Keypad Code(s)', 'fsbhoa-ac' ); ?>
                         </label>
 
+                        <?php
+                        $can_edit = ! empty( $all_pins ) && ! $this->is_rotation_vendor( $cardholder_id );
+                        $edit_uid = $can_edit ? wp_unique_id( 'fsbhoa-dk-vpin-' ) : '';
+                        // Pencil at the end of the codes' line; the edit inputs below stay disabled (not submitted) until it's clicked
+                        $pencil = function () use ( $can_edit, $edit_uid ) {
+                            if ( ! $can_edit ) {
+                                return;
+                            }
+                            ?>
+                            <button type="button" class="button-link fsbhoa-dk-edit-toggle" data-target="<?php echo esc_attr( $edit_uid ); ?>"
+                                    title="<?php esc_attr_e( 'Correct the gate code(s)', 'fsbhoa-ac-doorking' ); ?>" style="text-decoration: none; line-height: 1;">
+                                <span class="dashicons dashicons-edit"></span>
+                            </button>
+                            <?php
+                        };
+                        ?>
                         <?php if ( empty( $all_pins ) ) : ?>
                             <p style="color: #666; font-style: italic; margin: 0; font-size: 13px;">
                                 <?php esc_html_e( 'No dedicated keypad PIN assigned (Uses monthly rotating vendor code or RFID windshield tag).', 'fsbhoa-ac' ); ?>
                             </p>
                         <?php elseif ( count( $all_pins ) === 1 ) : ?>
-                            <span class="fsbhoa-readonly-field" style="display: inline-block; font-size: 18px; font-weight: bold; letter-spacing: 2px; color: #1d2327; background: #f0f0f1; border: 1px solid #ccd0d4; padding: 4px 12px; border-radius: 4px;">
-                                #<?php echo esc_html( $all_pins[0]['code'] ); ?>
-                            </span>
-                            <?php if ( 'active' !== $all_pins[0]['status'] ) : ?>
-                                <span style="color: #d63638; font-weight: 600; font-size: 12px; margin-left: 8px;">(Inactive)</span>
-                            <?php endif; ?>
+                            <div style="display: flex; align-items: center; gap: 8px;" data-dk-hide-on-edit="<?php echo esc_attr( $edit_uid ); ?>">
+                                <span class="fsbhoa-readonly-field" style="display: inline-block; font-size: 18px; font-weight: bold; letter-spacing: 2px; color: #1d2327; background: #f0f0f1; border: 1px solid #ccd0d4; padding: 4px 12px; border-radius: 4px;">
+                                    #<?php echo esc_html( $all_pins[0]['code'] ); ?>
+                                </span>
+                                <?php if ( 'active' !== $all_pins[0]['status'] ) : ?>
+                                    <span style="color: #d63638; font-weight: 600; font-size: 12px;">(Inactive)</span>
+                                <?php endif; ?>
+                                <?php $pencil(); ?>
+                            </div>
                         <?php else : ?>
-                            <!-- Multi-PIN Display (Hall Ambulance, BrightView, etc.) -->
-                            <div style="background: #f6f7f7; border: 1px solid #c3c4c7; border-radius: 4px; padding: 10px; max-height: 180px; overflow-y: auto; max-width: 650px;">
+                            <!-- Multi-PIN Display (only OPEN & SHUT in the Nov 2026 data) -->
+                            <div data-dk-hide-on-edit="<?php echo esc_attr( $edit_uid ); ?>" style="background: #f6f7f7; border: 1px solid #c3c4c7; border-radius: 4px; padding: 10px; max-height: 180px; overflow-y: auto; max-width: 650px;">
                                 <div style="display: flex; justify-content: space-between; margin-bottom: 6px; border-bottom: 1px solid #ddd; padding-bottom: 4px;">
                                     <strong style="font-size: 12px;"><?php printf( esc_html__( '%d Dedicated PINs Registered', 'fsbhoa-ac' ), count( $all_pins ) ); ?></strong>
                                     <span style="font-size: 11px; color: #666;">DoorKing Sync Protected</span>
                                 </div>
-                                <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                                <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px;">
                                     <?php foreach ( $all_pins as $p ) : ?>
                                         <span style="font-family: monospace; font-size: 13px; font-weight: 600; padding: 2px 6px; background: #fff; border: 1px solid #ccd0d4; border-radius: 3px; <?php echo ( 'active' !== $p['status'] ) ? 'color: #999; text-decoration: line-through;' : 'color: #2271b1;'; ?>">
                                             #<?php echo esc_html( $p['code'] ); ?>
                                         </span>
                                     <?php endforeach; ?>
+                                    <?php $pencil(); ?>
                                 </div>
                             </div>
+                        <?php endif; ?>
+
+                        <?php if ( $can_edit ) : ?>
+                            <div id="<?php echo esc_attr( $edit_uid ); ?>" style="display: none;">
+                                <input type="hidden" name="dk_vendor_pins_edited" value="1" disabled />
+                                <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+                                    <?php foreach ( $all_pins as $p ) : ?>
+                                        <input type="text" name="dk_vendor_pins[<?php echo esc_attr( $p['id'] ); ?>]" value="<?php echo esc_attr( $p['code'] ); ?>"
+                                               maxlength="4" inputmode="numeric" pattern="[0-9]{4}" disabled
+                                               style="width: 6em; font-family: monospace;" />
+                                    <?php endforeach; ?>
+                                </div>
+                                <p class="description" style="margin: 4px 0 0; font-size: 11px;">
+                                    <?php esc_html_e( 'Each gate code must be 4 digits and not used by anyone else. Saving sends the change to RAM with the next push.', 'fsbhoa-ac-doorking' ); ?>
+                                </p>
+                            </div>
+                            <?php $this->render_edit_toggle_script(); ?>
                         <?php endif; ?>
                     </div>
                 </div>
@@ -358,6 +398,7 @@ class FSBHOA_AC_DoorKing {
             : ( ! empty( $household_dir ) ? $household_dir : $this->generate_unique_code( 'DK_DIR_CODE' ) );
 
         $opt_in_val = ( $opt_in !== '0' ) ? $opt_in : ( $household_opt ?: '0' );
+        $edit_uid   = wp_unique_id( 'fsbhoa-dk-codes-' );
         ?>
         <div class="postbox" style="margin-top: 5px;">
             <div class="inside" style="padding: 12px 6px;">
@@ -367,23 +408,34 @@ class FSBHOA_AC_DoorKing {
                         DoorKing Gate Access:
                     </span>
 
-                    <!-- Directory Code Badge -->
+                    <!-- Directory Code: badge, or an input once the pencil is clicked -->
                     <div style="display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;">
                         <label style="font-size: 12px; color: #50575e;">Directory Code:</label>
-                        <input type="hidden" name="dk_creds[DK_DIR_CODE]" value="<?php echo esc_attr( $dir_code_val ); ?>" />
-                        <span style="font-family: monospace; font-size: 13px; font-weight: bold; background: #f0f0f1; border: 1px solid #ccd0d4; padding: 2px 7px; border-radius: 3px; color: #1d2327;">
+                        <input type="hidden" name="dk_creds[DK_DIR_CODE]" value="<?php echo esc_attr( $dir_code_val ); ?>" data-dk-hide-on-edit="<?php echo esc_attr( $edit_uid ); ?>" />
+                        <span data-dk-hide-on-edit="<?php echo esc_attr( $edit_uid ); ?>" style="font-family: monospace; font-size: 13px; font-weight: bold; background: #f0f0f1; border: 1px solid #ccd0d4; padding: 2px 7px; border-radius: 3px; color: #1d2327;">
                             [ <?php echo esc_html( $dir_code_val ); ?> ]
                         </span>
+                        <input type="text" name="dk_creds[DK_DIR_CODE]" value="<?php echo esc_attr( $dir_code_val ); ?>" data-dk-show-on-edit="<?php echo esc_attr( $edit_uid ); ?>"
+                               maxlength="4" inputmode="numeric" pattern="[0-9]{1,4}" disabled style="display: none; width: 5em; font-family: monospace;" />
                     </div>
 
-                    <!-- Gate Code / Keypad PIN Badge -->
+                    <!-- Gate Code / Keypad PIN: badge, or an input once the pencil is clicked -->
                     <div style="display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;">
                         <label style="font-size: 12px; color: #50575e;">Gate Code:</label>
-                        <input type="hidden" name="dk_creds[DK_ENTRY_CODE]" value="<?php echo esc_attr( $ent_code_val ); ?>" />
-                        <span style="font-family: monospace; font-size: 13px; font-weight: bold; background: #f0f0f1; border: 1px solid #ccd0d4; padding: 2px 7px; border-radius: 3px; color: #1d2327;">
+                        <input type="hidden" name="dk_creds[DK_ENTRY_CODE]" value="<?php echo esc_attr( $ent_code_val ); ?>" data-dk-hide-on-edit="<?php echo esc_attr( $edit_uid ); ?>" />
+                        <span data-dk-hide-on-edit="<?php echo esc_attr( $edit_uid ); ?>" style="font-family: monospace; font-size: 13px; font-weight: bold; background: #f0f0f1; border: 1px solid #ccd0d4; padding: 2px 7px; border-radius: 3px; color: #1d2327;">
                             [ #<?php echo esc_html( $ent_code_val ); ?> ]
                         </span>
+                        <input type="text" name="dk_creds[DK_ENTRY_CODE]" value="<?php echo esc_attr( $ent_code_val ); ?>" data-dk-show-on-edit="<?php echo esc_attr( $edit_uid ); ?>"
+                               maxlength="4" inputmode="numeric" pattern="[0-9]{4}" disabled style="display: none; width: 5em; font-family: monospace;" />
+                        <input type="hidden" name="dk_creds[edited]" value="1" data-dk-show-on-edit="<?php echo esc_attr( $edit_uid ); ?>" disabled />
                     </div>
+
+                    <!-- Pencil: correct the household's codes -->
+                    <button type="button" class="button-link fsbhoa-dk-edit-toggle" data-target="<?php echo esc_attr( $edit_uid ); ?>"
+                            title="<?php esc_attr_e( 'Correct the Directory Code or Gate Code', 'fsbhoa-ac-doorking' ); ?>" style="text-decoration: none;">
+                        <span class="dashicons dashicons-edit"></span>
+                    </button>
 
                     <!-- Shortened Opt-In Checkbox -->
                     <div style="display: inline-flex; align-items: center; white-space: nowrap;">
@@ -400,19 +452,211 @@ class FSBHOA_AC_DoorKing {
 
                 <!-- Helper Note Below -->
                 <p class="description" style="margin: 6px 0 0 0; font-size: 11px; color: #646970; font-style: italic;">
-                    Note: all household members share the same Gate Code and Directory Code.
+                    Note: all household members share the same Gate Code and Directory Code. A correction made with the pencil changes them for the whole household.
                 </p>
             </div>
         </div>
         <?php
+        $this->render_edit_toggle_script();
+    }
+
+    /**
+     * True for the three "Community Vendor (Current/Previous/Next)" records, whose codes the
+     * monthly rotation manages (changed only on the DoorKing settings page).
+     */
+    private function is_rotation_vendor( $cardholder_id ) {
+        global $wpdb;
+        if ( $cardholder_id <= 0 ) {
+            return false;
+        }
+        return (bool) $wpdb->get_var( $wpdb->prepare(
+            "SELECT id FROM ac_cardholders WHERE id = %d AND first_name = 'Community' AND last_name IN (%s, %s, %s) AND cardholder_type = 'vendor'",
+            $cardholder_id,
+            Fsbhoa_DoorKing_Rotation::VENDOR_CURRENT_NAME,
+            Fsbhoa_DoorKing_Rotation::VENDOR_PREVIOUS_NAME,
+            Fsbhoa_DoorKing_Rotation::VENDOR_NEXT_NAME
+        ) );
+    }
+
+    /**
+     * The pencil's click handler, printed once per page. Clicking shows the inputs and enables
+     * them (disabled inputs aren't submitted, so nothing changes unless the pencil was used).
+     */
+    private function render_edit_toggle_script() {
+        static $done = false;
+        if ( $done ) {
+            return;
+        }
+        $done = true;
+        ?>
+        <script>
+        document.addEventListener('click', function (e) {
+            var btn = e.target.closest ? e.target.closest('.fsbhoa-dk-edit-toggle') : null;
+            if (!btn) { return; }
+            e.preventDefault();
+            var uid = btn.getAttribute('data-target');
+            document.querySelectorAll('[data-dk-hide-on-edit="' + uid + '"]').forEach(function (el) {
+                el.style.display = 'none';
+                if (el.tagName === 'INPUT') { el.disabled = true; }
+            });
+            document.querySelectorAll('[data-dk-show-on-edit="' + uid + '"]').forEach(function (el) {
+                if (el.type !== 'hidden') { el.style.display = ''; }
+                el.disabled = false;
+            });
+            var box = document.getElementById(uid);
+            if (box) {
+                box.style.display = '';
+                box.querySelectorAll('input').forEach(function (el) { el.disabled = false; });
+            }
+            btn.style.display = 'none';
+            var first = document.querySelector('[data-dk-show-on-edit="' + uid + '"][type="text"]') || (box && box.querySelector('input[type="text"]'));
+            if (first) { first.focus(); first.select(); }
+        });
+        </script>
+        <?php
+    }
+
+    /**
+     * Who else holds a DoorKing code ('' if nobody). Any row counts, current or not, like
+     * generate_unique_code(), since RAM keeps only the first holder of a duplicate code.
+     * Rows of $exclude_cardholder and of $exclude_household are skipped (a household shares its codes).
+     */
+    private function code_holder( $type_code, $value, $exclude_cardholder, $exclude_household ) {
+        global $wpdb;
+
+        if ( 'DK_ENTRY_CODE' === $type_code && $value === (string) get_option( 'fsbhoa_dk_next_month_code', '' ) ) {
+            return __( "next month's vendor code", 'fsbhoa-ac-doorking' );
+        }
+
+        $sql = "SELECT c.id, c.first_name, c.last_name, c.company, c.cardholder_type, c.cardholder_status
+                FROM ac_credentials cr
+                JOIN ac_cardholders c ON c.id = cr.cardholder_id
+                WHERE cr.credential_type = %s
+                  AND cr.credential_value = %s
+                  AND (cr.vehicle_id IS NULL OR cr.vehicle_id = 0)
+                  AND cr.cardholder_id != %d";
+        $args = [ $type_code, $value, (int) $exclude_cardholder ];
+        if ( $exclude_household > 0 ) {
+            $sql   .= ' AND (c.household_id IS NULL OR c.household_id != %d)';
+            $args[] = (int) $exclude_household;
+        }
+        $row = $wpdb->get_row( $wpdb->prepare( $sql . ' LIMIT 1', $args ) );
+        if ( ! $row ) {
+            $legacy = $this->legacy_holder( $type_code, $value );
+            return ( null === $legacy ) ? '' : sprintf(
+                /* translators: %s: the RAM name of the legacy entry */
+                __( 'the DoorKing Legacy entry "%s" (give it to a cardholder with Assign on the DoorKing Legacy page)', 'fsbhoa-ac-doorking' ),
+                '' !== trim( $legacy ) ? trim( $legacy ) : __( 'unnamed', 'fsbhoa-ac-doorking' )
+            );
+        }
+
+        $name = trim( $row->first_name . ' ' . $row->last_name );
+        if ( 'vendor' === $row->cardholder_type && ! empty( $row->company ) ) {
+            $name = $row->company . ( $name ? " ($name)" : '' );
+        }
+        $label = $name . ' #' . $row->id;
+        if ( 'archived' === $row->cardholder_status ) {
+            $label .= ' ' . __( '(archived)', 'fsbhoa-ac-doorking' );
+        }
+        return $label;
+    }
+
+    /**
+     * The RAM name of the legacy entry that keeps a directory or gate code (null if none).
+     * Legacy values stay in RAM through the export, so no cardholder may take them by accident.
+     */
+    private function legacy_holder( $type_code, $value ) {
+        global $wpdb;
+        if ( ! class_exists( 'Fsbhoa_DoorKing_Legacy' ) ) {
+            return null;
+        }
+        $kind = ( 'DK_DIR_CODE' === $type_code ) ? 'dir' : ( ( 'DK_ENTRY_CODE' === $type_code ) ? 'ent' : '' );
+        if ( '' === $kind ) {
+            return null;
+        }
+        $suppress = $wpdb->suppress_errors( true );
+        $name     = $wpdb->get_var( $wpdb->prepare(
+            'SELECT e.ram_name FROM ' . Fsbhoa_DoorKing_Legacy::VALUES_TABLE . ' v JOIN ' . Fsbhoa_DoorKing_Legacy::ENTRIES_TABLE . ' e ON e.id = v.entry_id WHERE v.value_kind = %s AND v.value = %s LIMIT 1',
+            $kind, str_pad( $value, 4, '0', STR_PAD_LEFT )
+        ) );
+        $wpdb->suppress_errors( $suppress );
+        return $name;
+    }
+
+    /**
+     * The household's current value of a code (the cardholder's own row first), as the form shows it.
+     */
+    private function current_household_code( $type_code, $cardholder_id, $household_id ) {
+        global $wpdb;
+        $val = '';
+        if ( $cardholder_id > 0 ) {
+            $val = (string) $wpdb->get_var( $wpdb->prepare(
+                "SELECT credential_value FROM ac_credentials WHERE cardholder_id = %d AND credential_type = %s AND credential_value != '' AND (vehicle_id IS NULL OR vehicle_id = 0) ORDER BY id ASC LIMIT 1",
+                $cardholder_id, $type_code
+            ) );
+        }
+        if ( '' === $val && $household_id > 0 ) {
+            $val = (string) $wpdb->get_var( $wpdb->prepare(
+                "SELECT cr.credential_value FROM ac_credentials cr JOIN ac_cardholders c ON cr.cardholder_id = c.id WHERE c.household_id = %d AND cr.credential_type = %s AND cr.credential_value != '' LIMIT 1",
+                $household_id, $type_code
+            ) );
+        }
+        return $val;
+    }
+
+    /**
+     * The household a cardholder belongs to (0 if none). On an add, the form's household_id.
+     */
+    private function household_of( $cardholder_id, $post_data ) {
+        global $wpdb;
+        if ( $cardholder_id > 0 ) {
+            $hh = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT household_id FROM ac_cardholders WHERE id = %d', $cardholder_id ) );
+            if ( $hh > 0 ) {
+                return $hh;
+            }
+        }
+        return isset( $post_data['household_id'] ) ? absint( $post_data['household_id'] ) : 0;
     }
 
     /**
      * Validate DoorKing credentials during form submission.
      */
     public function validate_credentials( $result, $post_data, $existing_data, $cardholder_id, $is_update ) {
+        $cardholder_id = absint( $cardholder_id );
+
+        // Vendor PINs corrected with the pencil: 4 digits, and nobody else holds them
+        if ( ! empty( $post_data['dk_vendor_pins_edited'] ) && isset( $post_data['dk_vendor_pins'] ) && is_array( $post_data['dk_vendor_pins'] ) ) {
+            $result = $this->validate_vendor_pins( $result, $post_data['dk_vendor_pins'], $cardholder_id );
+        }
+
         if ( ! isset( $post_data['dk_creds'] ) || ! is_array( $post_data['dk_creds'] ) ) {
             return $result;
+        }
+
+        // Codes corrected with the pencil: both required, and unique outside the household.
+        // Checked only when changed, so an existing duplicate doesn't block other edits.
+        if ( ! empty( $post_data['dk_creds']['edited'] ) ) {
+            $household_id = $this->household_of( $cardholder_id, $post_data );
+            $checks = [
+                'DK_DIR_CODE'   => [ 'dk_dir_code', __( 'Directory Code', 'fsbhoa-ac-doorking' ) ],
+                'DK_ENTRY_CODE' => [ 'dk_entry_code', __( 'Gate Code', 'fsbhoa-ac-doorking' ) ],
+            ];
+            foreach ( $checks as $type_code => list( $err_key, $label ) ) {
+                $val = preg_replace( '/[^0-9]/', '', (string) ( $post_data['dk_creds'][ $type_code ] ?? '' ) );
+                if ( '' === $val ) {
+                    /* translators: %s: Directory Code or Gate Code */
+                    $result['errors'][ $err_key ] = sprintf( __( 'The %s cannot be blank.', 'fsbhoa-ac-doorking' ), $label );
+                    continue;
+                }
+                if ( $val === $this->current_household_code( $type_code, $cardholder_id, $household_id ) ) {
+                    continue;
+                }
+                $holder = $this->code_holder( $type_code, $val, $cardholder_id, $household_id );
+                if ( '' !== $holder ) {
+                    /* translators: 1: Directory Code or Gate Code, 2: the code, 3: who holds it */
+                    $result['errors'][ $err_key . '_dup' ] = sprintf( __( '%1$s %2$s is already used by %3$s.', 'fsbhoa-ac-doorking' ), $label, $val, $holder );
+                }
+            }
         }
 
         if ( ! empty( $post_data['dk_creds']['DK_ENTRY_CODE'] ) ) {
@@ -433,6 +677,101 @@ class FSBHOA_AC_DoorKing {
     }
 
     /**
+     * The vendor's own gate-code rows, id => value (only these may be changed from its form).
+     */
+    private function vendor_pin_rows( $cardholder_id ) {
+        global $wpdb;
+        $rows = $wpdb->get_results( $wpdb->prepare(
+            "SELECT id, credential_value FROM ac_credentials WHERE cardholder_id = %d AND credential_type = 'DK_ENTRY_CODE' AND (vehicle_id IS NULL OR vehicle_id = 0)",
+            $cardholder_id
+        ) );
+        $out = [];
+        foreach ( $rows as $r ) {
+            $out[ (int) $r->id ] = (string) $r->credential_value;
+        }
+        return $out;
+    }
+
+    /**
+     * Vendor PINs corrected with the pencil: each 4 digits, distinct, and held by no other cardholder.
+     */
+    private function validate_vendor_pins( $result, $submitted, $cardholder_id ) {
+        if ( $cardholder_id <= 0 || $this->is_rotation_vendor( $cardholder_id ) ) {
+            return $result;
+        }
+        $own   = $this->vendor_pin_rows( $cardholder_id );
+        $final = $own; // id => value after the change
+        foreach ( $submitted as $cred_id => $raw ) {
+            $cred_id = absint( $cred_id );
+            if ( ! isset( $own[ $cred_id ] ) ) {
+                continue;
+            }
+            $val = preg_replace( '/[^0-9]/', '', (string) $raw );
+            if ( strlen( $val ) !== 4 ) {
+                $result['errors']['dk_vendor_pin_' . $cred_id] = sprintf(
+                    /* translators: %s: what was entered */
+                    __( 'Gate code "%s" must be exactly 4 digits.', 'fsbhoa-ac-doorking' ), sanitize_text_field( (string) $raw )
+                );
+                continue;
+            }
+            $final[ $cred_id ] = $val;
+        }
+
+        $counts = array_count_values( $final );
+        foreach ( $final as $cred_id => $val ) {
+            if ( $val === $own[ $cred_id ] ) {
+                continue;
+            }
+            if ( $counts[ $val ] > 1 ) {
+                /* translators: %s: the code */
+                $result['errors']['dk_vendor_pin_dup_' . $cred_id] = sprintf( __( 'Gate code %s is listed twice for this vendor.', 'fsbhoa-ac-doorking' ), $val );
+                continue;
+            }
+            $holder = $this->code_holder( 'DK_ENTRY_CODE', $val, $cardholder_id, 0 );
+            if ( '' !== $holder ) {
+                /* translators: 1: the code, 2: who holds it */
+                $result['errors']['dk_vendor_pin_dup_' . $cred_id] = sprintf( __( 'Gate code %1$s is already used by %2$s.', 'fsbhoa-ac-doorking' ), $val, $holder );
+            }
+        }
+        return $result;
+    }
+
+    /**
+     * Save vendor PINs corrected with the pencil (validated in validate_vendor_pins()).
+     */
+    private function save_vendor_pins( $cardholder_id ) {
+        global $wpdb;
+        if ( empty( $_POST['dk_vendor_pins_edited'] ) || empty( $_POST['dk_vendor_pins'] ) || ! is_array( $_POST['dk_vendor_pins'] ) ) {
+            return;
+        }
+        if ( $this->is_rotation_vendor( $cardholder_id ) ) {
+            return;
+        }
+        $own = $this->vendor_pin_rows( $cardholder_id );
+        foreach ( $_POST['dk_vendor_pins'] as $cred_id => $raw ) {
+            $cred_id = absint( $cred_id );
+            $val     = preg_replace( '/[^0-9]/', '', (string) $raw );
+            if ( ! isset( $own[ $cred_id ] ) || strlen( $val ) !== 4 || $val === $own[ $cred_id ] ) {
+                continue;
+            }
+            $wpdb->update( 'ac_credentials', [ 'credential_value' => $val ], [ 'id' => $cred_id, 'cardholder_id' => $cardholder_id ] );
+            $this->log_code_change( 'vendor', $cardholder_id, 'DK_ENTRY_CODE', $own[ $cred_id ], $val );
+        }
+    }
+
+    /**
+     * Record a corrected code in the PHP error log (who, which cardholder, old and new value).
+     */
+    private function log_code_change( $kind, $cardholder_id, $type_code, $old, $new ) {
+        $user = wp_get_current_user();
+        error_log( sprintf(
+            'FSBHOA DoorKing: %s changed %s %s -> %s for %s #%d',
+            $user && $user->exists() ? $user->user_login : 'unknown user',
+            $type_code, $old === '' ? '(none)' : $old, $new, $kind, $cardholder_id
+        ) );
+    }
+
+    /**
      * Save DoorKing credentials and propagate household opt-in.
      */
     public function save_cardholder_credentials( $cardholder_id, $data_saved, $existing_data = [] ) {
@@ -443,6 +782,7 @@ class FSBHOA_AC_DoorKing {
         $cardholder_type = $data_saved['cardholder_type'] ?? 'resident';
 
         if ( 'vendor' === $cardholder_type ) {
+            $this->save_vendor_pins( absint( $cardholder_id ) );
             return;
         }
 
@@ -452,6 +792,18 @@ class FSBHOA_AC_DoorKing {
 
         global $wpdb;
         $post_creds = $_POST['dk_creds'];
+
+        // Codes corrected with the pencil: note the household's values before this save, so the
+        // other members can be brought along afterwards (step 1b)
+        $edited     = ! empty( $post_creds['edited'] );
+        $old_codes  = [];
+        $edit_hh_id = 0;
+        if ( $edited ) {
+            $edit_hh_id = $this->household_of( $cardholder_id, [] );
+            foreach ( [ 'DK_DIR_CODE', 'DK_ENTRY_CODE' ] as $t ) {
+                $old_codes[ $t ] = $this->current_household_code( $t, (int) $cardholder_id, $edit_hh_id );
+            }
+        }
 
         // 1. Persist Directory Code & Keypad PIN for this individual
         $code_types = [ 'DK_DIR_CODE', 'DK_ENTRY_CODE' ];
@@ -490,6 +842,30 @@ class FSBHOA_AC_DoorKing {
                     'issue_date'       => current_time( 'Y-m-d' ),
                     'expiration_date'  => '2099-12-31',
                 ] );
+            }
+        }
+
+        // 1b. A pencil correction applies to the whole household: update the other current
+        //     members' rows (members without a row inherit it on display, as before)
+        if ( $edited ) {
+            foreach ( [ 'DK_DIR_CODE', 'DK_ENTRY_CODE' ] as $t ) {
+                $new = preg_replace( '/[^0-9]/', '', (string) ( $post_creds[ $t ] ?? '' ) );
+                if ( '' === $new || $new === $old_codes[ $t ] ) {
+                    continue;
+                }
+                if ( $edit_hh_id > 0 ) {
+                    $wpdb->query( $wpdb->prepare(
+                        "UPDATE ac_credentials cr
+                         JOIN ac_cardholders c ON c.id = cr.cardholder_id
+                         SET cr.credential_value = %s
+                         WHERE c.household_id = %d
+                           AND c.cardholder_status != 'archived'
+                           AND cr.credential_type = %s
+                           AND (cr.vehicle_id IS NULL OR cr.vehicle_id = 0)",
+                        $new, $edit_hh_id, $t
+                    ) );
+                }
+                $this->log_code_change( 'household ' . $edit_hh_id . ' via cardholder', (int) $cardholder_id, $t, $old_codes[ $t ], $new );
             }
         }
 

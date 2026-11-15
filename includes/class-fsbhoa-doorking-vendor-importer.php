@@ -35,7 +35,7 @@ class Fsbhoa_DoorKing_Vendor_Importer {
         if ( $this->is_dry_run ) {
             $this->dry_run_log[] = "=== STARTING VENDOR DRY RUN ===";
             $this->dry_run_log[] = "Database writes are DISABLED.";
-            $this->dry_run_log[] = "0xxxx values = Gate PINs | 1xxxx values = Windshield RFIDs";
+            $this->dry_run_log[] = "0xxxx values = fobs, ignored | 1xxxx values = Windshield RFIDs";
             $this->dry_run_log[] = "Directory codes (DK_DIR_CODE) are OMITTED for all vendors.";
             $this->dry_run_log[] = "--------------------------------------------------";
         }
@@ -141,15 +141,15 @@ class Fsbhoa_DoorKing_Vendor_Importer {
             return false;
         }
 
-        // Special case: empty or "." maintenance slots
-        if ( empty( $resident_name ) || '.' === $resident_name ) {
-            $resident_name = 'Open & Shut';
-            $is_vendor     = true;
-        } else {
-            $is_vendor = ( 'Y' === strtoupper( $is_vendor_col ) )
-                      || ( 0 === stripos( $resident_name, 'V-' ) )
-                      || ( 0 === stripos( $resident_name, 'V -' ) );
+        // Rows with a blank or "." name belong to no cardholder: the DoorKing Legacy check keeps
+        // them as legacy entries (resident type), as RAM had them. Until 2026-11-15 they were
+        // all given to Open & Shut, whose own row is "V- OPEN & SHUT".
+        if ( '' === $resident_name || '.' === $resident_name ) {
+            return false;
         }
+        $is_vendor = ( 'Y' === strtoupper( $is_vendor_col ) )
+                  || ( 0 === stripos( $resident_name, 'V-' ) )
+                  || ( 0 === stripos( $resident_name, 'V -' ) );
 
         if ( ! $is_vendor ) {
             return false;
@@ -330,13 +330,13 @@ class Fsbhoa_DoorKing_Vendor_Importer {
                 continue;
             }
 
-            // 5-digit device starting with 0 is an entry PIN
-            if ( 5 === strlen( $device_num ) && '0' === substr( $device_num, 0, 1 ) ) {
-                $pin_val = substr( $device_num, 1 );
-                $this->upsert_credential( $cardholder_id, null, 'DK_ENTRY_CODE', $pin_val, $note, $initial_status );
+            // A device starting with 0 is a fob, which no reader at the gates reads any more
+            // (until 2026-11-11 it was taken as gate code xxxx)
+            if ( '0' === substr( $device_num, 0, 1 ) ) {
+                continue;
             }
             // 5-digit device starting with 1 is a windshield RFID
-            elseif ( 5 === strlen( $device_num ) && '1' === substr( $device_num, 0, 1 ) ) {
+            if ( 5 === strlen( $device_num ) && '1' === substr( $device_num, 0, 1 ) ) {
                 $vehicle_id = $this->resolve_vendor_vehicle( $cardholder_id, $note, $device_num );
                 $this->upsert_credential( $cardholder_id, $vehicle_id, 'DK_WINDSHIELD', $device_num, $note, $initial_status );
             }

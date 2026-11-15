@@ -33,7 +33,7 @@ class Fsbhoa_DoorKing_Legacy {
         'archived'   => 'Held only by archived or purged cardholders',
         'inactive'   => 'Held by a current cardholder, but the credential is disabled, inactive or expired',
         'superseded' => 'Held by a current cardholder with a valid credential, but not sent (for example, the household has another directory code)',
-        'test'       => 'Only on test-account rows (blank or "." name); never kept',
+        'dir'        => 'A directory code not in the database, a household\'s extra one (one per household), or on a vendor row (vendors have none); never kept (except on unnamed rows)',
     ];
 
     const KIND_LABELS = [
@@ -117,8 +117,7 @@ class Fsbhoa_DoorKing_Legacy {
     }
 
     /**
-     * Comparison key of a normalized value. A device 0xxxx is how the export writes a
-     * household's second and later gate codes, so it compares as gate code xxxx.
+     * Comparison key of a normalized value.
      */
     private static function key( $kind, $value ) {
         if ( 'dir' === $kind ) {
@@ -127,7 +126,16 @@ class Fsbhoa_DoorKing_Legacy {
         if ( 'ent' === $kind ) {
             return 'pin:' . $value;
         }
-        return ( '0' === $value[0] ) ? 'pin:' . substr( $value, 1 ) : 'tag:' . $value;
+        return 'tag:' . $value;
+    }
+
+    /**
+     * A device starting with 0 is a fob. No reader at the gates reads fobs any more, so they
+     * are ignored everywhere: the importers skip them, the export never sends them, and the
+     * check doesn't count them as lost.
+     */
+    public static function is_fob( $device ) {
+        return '' !== (string) $device && '0' === substr( (string) $device, 0, 1 );
     }
 
     /**
@@ -178,9 +186,12 @@ class Fsbhoa_DoorKing_Legacy {
             if ( '' !== $ent ) {
                 $values[] = [ 'kind' => 'ent', 'value' => $ent, 'note' => '' ];
             }
+            $fobs = 0;
             foreach ( $device_cols as $dc ) {
                 $dev = self::normalize( 'dev', $cell( $data, $dc[0] ) );
-                if ( '' !== $dev ) {
+                if ( self::is_fob( $dev ) ) {
+                    $fobs++;
+                } elseif ( '' !== $dev ) {
                     $values[] = [ 'kind' => 'dev', 'value' => $dev, 'note' => $cell( $data, $dc[1] ) ];
                 }
             }
@@ -196,9 +207,12 @@ class Fsbhoa_DoorKing_Legacy {
                 'aac'     => preg_replace( '/[^0-9]/', '', $cell( $data, $col['AAC'] ?? null ) ),
                 'phone'   => substr( $cell( $data, $col['PHONE'] ?? null ), 0, 12 ),
                 'vendor'  => ( 'Y' === strtoupper( substr( $cell( $data, $col['VENDOR'] ?? null ), 0, 1 ) ) ) ? 'Y' : 'N',
-                // The contractor's test accounts (the importers skip these too)
-                'test'    => ( '' === $name || '.' === $name ),
+                // Unnamed rows (blank or "."), which no cardholder holds: the importers skip
+                // them and the check keeps them whole, as resident-type entries (since 2026-11-15;
+                // until then they were "test accounts", never kept)
+                'unnamed' => ( '' === $name || '.' === $name ),
                 'values'  => $values,
+                'fobs'    => $fobs,
             ];
             if ( 0 === strcasecmp( $row_account, $account ) ) {
                 $out['rows'][] = $row;
@@ -216,7 +230,11 @@ class Fsbhoa_DoorKing_Legacy {
         global $wpdb;
         $rows = $wpdb->get_results( "
             SELECT cr.credential_type, cr.credential_value, cr.status, cr.expiration_date,
-                   c.id, c.first_name, c.last_name, c.company, c.cardholder_status, c.cardholder_type
+                   c.id, c.first_name, c.last_name, c.company, c.cardholder_status, c.cardholder_type,
+                   ( c.cardholder_status = 'archived' AND EXISTS (
+                       SELECT 1 FROM ac_vehicles v JOIN ac_cardholders m ON m.household_id = v.household_id
+                       WHERE v.vehicle_id = cr.vehicle_id AND m.cardholder_status = 'active' AND m.cardholder_type = 'resident'
+                   ) ) AS household_vehicle
             FROM ac_credentials cr
             JOIN ac_cardholders c ON c.id = cr.cardholder_id
             WHERE cr.credential_type IN ('DK_DIR_CODE', 'DK_ENTRY_CODE', 'DK_WINDSHIELD', 'RFID', 'WIEGAND_26')
@@ -227,14 +245,16 @@ class Fsbhoa_DoorKing_Legacy {
         foreach ( (array) $rows as $r ) {
             $kind  = $kinds[ strtoupper( $r->credential_type ) ] ?? 'dev';
             $value = self::normalize( $kind, $r->credential_value );
-            if ( '' === $value ) {
+            if ( '' === $value || ( 'dev' === $kind && self::is_fob( $value ) ) ) {
                 continue;
             }
             $expiry = (string) $r->expiration_date;
             $map[ self::key( $kind, $value ) ][] = [
                 'id'      => (int) $r->id,
                 'name'    => self::cardholder_label( $r ),
-                'current' => ( 'active' === $r->cardholder_status ),
+                // A tag on a vehicle of a household with a current member is sent (the export's
+                // export_households), even when an archived member's record holds it
+                'current' => ( 'active' === $r->cardholder_status ) || ! empty( $r->household_vehicle ),
                 'status'  => $r->cardholder_status,
                 'valid'   => in_array( $r->status, [ 'active', 'valid' ], true )
                              && ( '' === $expiry || $expiry < '1000-01-01' || substr( $expiry, 0, 10 ) >= $today ),
@@ -317,14 +337,16 @@ class Fsbhoa_DoorKing_Legacy {
             return $ours;
         }
 
-        // What RAM holds, by key: the first row that has it, preferring a real row to a test row
+        // What RAM holds, by key: the first row that has it, preferring a named row to an unnamed one
         $ram_values = [];
         $ram_count  = 0;
+        $ram_fobs   = 0;
         foreach ( $ram['rows'] as $ri => $row ) {
+            $ram_fobs += $row['fobs'];
             foreach ( $row['values'] as $v ) {
                 $ram_count++;
-                if ( ! isset( $ram_values[ $v['key'] ] ) || ( $ram_values[ $v['key'] ]['test'] && ! $row['test'] ) ) {
-                    $ram_values[ $v['key'] ] = $v + [ 'row' => $ri, 'name' => $row['name'], 'test' => $row['test'] ];
+                if ( ! isset( $ram_values[ $v['key'] ] ) || ( $ram_values[ $v['key'] ]['unnamed'] && ! $row['unnamed'] ) ) {
+                    $ram_values[ $v['key'] ] = $v + [ 'row' => $ri, 'name' => $row['name'], 'unnamed' => $row['unnamed'], 'vendor' => $row['vendor'] ];
                 }
             }
         }
@@ -344,8 +366,15 @@ class Fsbhoa_DoorKing_Legacy {
                 continue;
             }
             $holders = $db[ $key ] ?? [];
+            $reason = self::classify( $holders );
+            // Directory codes: one per resident household, none for vendors. One that isn't in
+            // the database, a household's extra (held validly but not sent), or a vendor's is
+            // never kept. An unnamed row's directory code is kept with the rest of the row.
+            if ( ! $v['unnamed'] && 'dir' === $v['kind'] && ( in_array( $reason, [ 'missing', 'superseded' ], true ) || 'Y' === $v['vendor'] ) ) {
+                $reason = 'dir';
+            }
             $lost[]  = $v + [
-                'reason'  => $v['test'] ? 'test' : self::classify( $holders ),
+                'reason'  => $reason,
                 'holders' => self::holders_text( $holders ),
             ];
         }
@@ -374,6 +403,7 @@ class Fsbhoa_DoorKing_Legacy {
             'ram_rows'       => count( $ram['rows'] ),
             'ram_values'     => count( $ram_values ),
             'ram_count'      => $ram_count,
+            'ram_fobs'       => $ram_fobs,
             'our_rows'       => count( $ours['rows'] ),
             'our_values'     => count( $our_values ),
             'our_cards'      => $built['cards'],
@@ -395,7 +425,7 @@ class Fsbhoa_DoorKing_Legacy {
         global $wpdb;
         $by_row = [];
         foreach ( $report['lost'] as $v ) {
-            if ( 'test' !== $v['reason'] && in_array( $v['reason'], $reasons, true ) ) {
+            if ( in_array( $v['reason'], $reasons, true ) ) {
                 $by_row[ $v['row'] ][] = $v;
             }
         }
@@ -409,7 +439,8 @@ class Fsbhoa_DoorKing_Legacy {
                 'h_flag'      => $row['h'],
                 'aac'         => substr( $row['aac'], 0, 5 ),
                 'phone'       => $row['phone'],
-                'is_vendor'   => $row['vendor'],
+                // Unnamed rows go back as resident type, even the few RAM marks vendor
+                'is_vendor'   => $row['unnamed'] ? 'N' : $row['vendor'],
                 'source_file' => substr( $file_name, 0, 255 ),
                 'captured_at' => current_time( 'mysql' ),
             ] );
@@ -608,16 +639,13 @@ class Fsbhoa_DoorKing_Legacy {
             $this->back( [ 'dk_error' => 'That legacy value no longer exists.' ] );
         }
 
-        // What the value becomes: a device 0xxxx is gate code xxxx (the export's convention)
+        // What the value becomes
         if ( 'dir' === $v->value_kind ) {
             $type  = 'DK_DIR_CODE';
             $value = $v->value;
         } elseif ( 'ent' === $v->value_kind ) {
             $type  = 'DK_ENTRY_CODE';
             $value = $v->value;
-        } elseif ( '0' === $v->value[0] ) {
-            $type  = 'DK_ENTRY_CODE';
-            $value = substr( $v->value, 1 );
         } else {
             $type  = 'DK_WINDSHIELD';
             $value = $v->value;
@@ -724,9 +752,6 @@ class Fsbhoa_DoorKing_Legacy {
                     $wanted[ 'DK_ENTRY_CODE|' . $v->value ] = true;
                 } else {
                     $wanted[ 'DK_WINDSHIELD|' . $v->value ] = true;
-                    if ( '0' === $v->value[0] ) {
-                        $wanted[ 'DK_ENTRY_CODE|' . substr( $v->value, 1 ) ] = true;
-                    }
                 }
             }
         }
@@ -768,9 +793,6 @@ class Fsbhoa_DoorKing_Legacy {
             $keys[] = 'DK_ENTRY_CODE|' . $v->value;
         } else {
             $keys[] = 'DK_WINDSHIELD|' . $v->value;
-            if ( '0' === $v->value[0] ) {
-                $keys[] = 'DK_ENTRY_CODE|' . substr( $v->value, 1 );
-            }
         }
         $best = null;
         foreach ( $keys as $k ) {
@@ -857,7 +879,7 @@ class Fsbhoa_DoorKing_Legacy {
         foreach ( $r['lost'] as $v ) {
             $by_reason[ $v['reason'] ][] = $v;
         }
-        $real_lost = count( $r['lost'] ) - count( $by_reason['test'] ?? [] );
+        $real_lost = count( $r['lost'] ) - count( $by_reason['dir'] ?? [] );
         $ok        = 0 === $real_lost && empty( $r['added'] ) && empty( $r['other_only'] );
         ?>
         <div style="background: #fff; border: 1px solid #ccc; border-left: 4px solid <?php echo $ok ? '#00a32a' : ( $real_lost ? '#d63638' : '#dba617' ); ?>; padding: 12px 20px; margin: 16px 0; max-width: 1100px;">
@@ -866,7 +888,7 @@ class Fsbhoa_DoorKing_Legacy {
                 <p><strong>Kept <?php echo (int) $r['kept']; ?> value(s) as legacy entries.</strong> The check below was run again afterwards.</p>
             <?php endif; ?>
             <p>
-                RAM (account <code><?php echo esc_html( $r['account'] ); ?></code>): <?php echo (int) $r['ram_rows']; ?> rows, <?php echo (int) $r['ram_values']; ?> different tags and codes.<br>
+                RAM (account <code><?php echo esc_html( $r['account'] ); ?></code>): <?php echo (int) $r['ram_rows']; ?> rows, <?php echo (int) $r['ram_values']; ?> different tags and codes<?php if ( ! empty( $r['ram_fobs'] ) ) : ?>, and <?php echo (int) $r['ram_fobs']; ?> fobs (devices starting with 0), which are ignored<?php endif; ?>.<br>
                 Next push: <?php echo (int) $r['our_rows']; ?> rows, <?php echo (int) $r['our_values']; ?> different tags and codes (<?php echo (int) $r['our_cards']; ?> of the controller's <?php echo (int) Fsbhoa_DoorKing_Export::MAX_CARDS; ?> card slots).
             </p>
             <?php if ( $ok ) : ?>
@@ -882,7 +904,7 @@ class Fsbhoa_DoorKing_Legacy {
                     continue;
                 }
                 ?>
-                <details <?php echo ( 'test' === $reason ) ? '' : 'open'; ?> style="margin-bottom: 10px;">
+                <details <?php echo ( 'dir' === $reason ) ? '' : 'open'; ?> style="margin-bottom: 10px;">
                     <summary><strong>Not sent: <?php echo esc_html( $label ); ?> (<?php echo count( $by_reason[ $reason ] ); ?>)</strong></summary>
                     <table class="widefat striped" style="margin-top: 6px;">
                         <thead><tr><th>RAM name</th><th>Kind</th><th>Value</th><th>RAM note</th><th>In the database</th></tr></thead>
