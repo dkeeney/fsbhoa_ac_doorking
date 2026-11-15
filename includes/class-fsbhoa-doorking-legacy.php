@@ -55,6 +55,79 @@ class Fsbhoa_DoorKing_Legacy {
         add_action( 'admin_post_fsbhoa_dk_legacy_remove_claimed', [ $this, 'handle_remove_claimed' ] );
         add_action( 'admin_post_fsbhoa_dk_legacy_assign', [ $this, 'handle_assign' ] );
         add_action( 'admin_post_fsbhoa_dk_legacy_note', [ $this, 'handle_note' ] );
+        // A legacy value used at a gate: tell the administrator on Discord
+        add_action( 'fsbhoa_core_vehicle_event_logged', [ $this, 'alert_if_used' ], 10, 2 );
+    }
+
+    // ------------------------------------------------------------------
+    // A legacy value used at a gate
+    // ------------------------------------------------------------------
+
+    const ALERT_TTL = DAY_IN_SECONDS;
+
+    /**
+     * Core's vehicle log stored a gate event. If its gate code or windshield tag is one that only
+     * a legacy entry holds, someone is still using it: send a Discord notice (not a critical
+     * alert), at most once a day per value, so it can be resolved (Assign, or fix the cardholder).
+     * Not for unnamed rows, which stay for good (2026-11-15, the user).
+     * Needs RAM's live transactions in the vehicle log (deployment phase 2).
+     */
+    public function alert_if_used( $vehicle_log_id, $event ) {
+        $kinds = [ 'DK_ENTRY_CODE' => 'ent', 'DK_WINDSHIELD' => 'dev' ];
+        $kind  = $kinds[ strtoupper( (string) ( $event['auth_type'] ?? '' ) ) ] ?? '';
+        if ( '' === $kind ) {
+            return;
+        }
+        $value = self::normalize( $kind, $event['auth_id'] ?? '' );
+        if ( '' === $value || ( 'dev' === $kind && self::is_fob( $value ) ) ) {
+            return;
+        }
+
+        global $wpdb;
+        $suppress = $wpdb->suppress_errors( true );
+        $entry    = $wpdb->get_row( $wpdb->prepare(
+            'SELECT e.id, e.ram_name, e.admin_note FROM ' . self::VALUES_TABLE . ' v JOIN ' . self::ENTRIES_TABLE . ' e ON e.id = v.entry_id
+             WHERE v.value_kind = %s AND v.value = %s LIMIT 1',
+            $kind, $value
+        ) );
+        $wpdb->suppress_errors( $suppress );
+        // Unnamed rows (blank or ".") are kept for good and expected in use (Open & Shut's 2244)
+        if ( ! $entry || in_array( trim( (string) $entry->ram_name ), [ '', '.' ], true ) ) {
+            return;
+        }
+
+        $throttle = 'fsbhoa_dk_legacy_used_' . $kind . '_' . $value;
+        if ( get_transient( $throttle ) ) {
+            return;
+        }
+
+        // Already given to a current cardholder: the export sends it for them, nothing to resolve
+        $holder = self::claimed_by( self::database_map(), (object) [ 'value_kind' => $kind, 'value' => $value ] );
+        if ( '' !== $holder ) {
+            return;
+        }
+        set_transient( $throttle, 1, self::ALERT_TTL );
+
+        if ( ! function_exists( 'fsbhoa_send_discord_alert' ) ) {
+            return;
+        }
+        $env  = Fsbhoa_DoorKing_Export::get_environment();
+        $name = trim( (string) $entry->ram_name );
+        $msg  = sprintf(
+            "**DoorKing legacy value used**%s: %s %s, legacy entry \"%s\", at %s, %s.\nNo cardholder holds it. Resolve it on the DoorKing Legacy page (Assign it, or fix the cardholder): %s",
+            '' !== $env ? ' [' . $env . ']' : '',
+            self::KIND_LABELS[ $kind ],
+            $value,
+            $name,
+            '' !== (string) ( $event['gate_identifier'] ?? '' ) ? $event['gate_identifier'] : 'a gate',
+            (string) ( $event['event_timestamp'] ?? current_time( 'mysql' ) ),
+            add_query_arg( [ 'page' => self::PAGE_SLUG ], admin_url( 'admin.php' ) )
+        );
+        if ( '' !== trim( (string) $entry->admin_note ) ) {
+            $msg .= "\nNote: " . trim( $entry->admin_note );
+        }
+        fsbhoa_send_discord_alert( $msg, false );
+        error_log( 'FSBHOA DoorKing legacy: ' . self::KIND_LABELS[ $kind ] . " $value (entry #{$entry->id}) used at a gate; Discord notice sent." );
     }
 
     /**
