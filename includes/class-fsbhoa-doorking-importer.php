@@ -36,7 +36,7 @@ class Fsbhoa_DoorKing_Importer {
 		'MARSHALL, G & R' => [ 'first' => 'Gwenetta', 'last' => 'Marshall' ],
 		'MARTINEZ,PHYLIS' => [ 'first' => 'Phyllis', 'last' => 'Martinez' ],
 		'OBRIEN, TERRY'   => [ 'first' => 'Terry', 'last' => "O'Brien" ],
-		'RAMIREZ, G'      => [ 'first' => 'Guadalupe', 'last' => 'Ramirez' ],
+		'RAMIREZ, G'      => [ 'first' => 'Aaron', 'last' => 'Ramirez, CEO' ],  // per the vehicle form (2026-11-16); the old alias matched no one
 		'RODACKER B.'     => [ 'first' => 'Elizabeth', 'last' => 'Rodacker' ],
 		'ROMM, BETTY'     => [ 'first' => 'Betty', 'last' => 'Poe' ],
 		'RUDE-ODELL'      => [ 'first' => 'James', 'last' => 'Rude' ],
@@ -55,7 +55,7 @@ class Fsbhoa_DoorKing_Importer {
         'BLAKENSHIP D'    => [ 'first' => '%', 'last' => 'Blankenship' ],
         'NUEBERT'         => [ 'first' => '%', 'last' => 'Neubert' ],
         'RIVERIA M & D'   => [ 'first' => '%', 'last' => 'Rivera' ],
-        'VIGNORLI, E'     => [ 'first' => '%', 'last' => 'Vignolo' ],
+        'VIGNORLI, E'     => [ 'first' => 'Eileen', 'last' => 'Callagy' ],  // per the vehicle form (2026-11-16); the old alias matched no one
         'WALZTMAN, R'     => [ 'first' => '%', 'last' => 'Waltzman' ],
         'ZAGUURSKI, H'    => [ 'first' => '%', 'last' => 'Zagurski' ],
         'ORTIZ.CYNTHIA'   => [ 'first' => 'Cynthia', 'last' => 'Ortiz' ],
@@ -66,6 +66,8 @@ class Fsbhoa_DoorKing_Importer {
         'RANDALL, CYNTHI' => [ 'first' => 'Cynthia', 'last' => 'Randell' ],  // lives with Bill Peloquin
         'SULLIVAN, J & M' => [ 'first' => 'Mary', 'last' => 'Sullivan' ],    // lives with Russell V Judd
         'YVETTE, J'       => [ 'first' => 'Pierre', 'last' => 'Noblins' ],
+        'JOHNSON, J & M'  => [ 'first' => 'Wes', 'last' => 'Johnson' ],  // per the vehicle form (2026-11-16)
+        'REED, KELLI'     => [ 'first' => 'Andrew', 'last' => 'Lacefield' ],  // per the vehicle form (2026-11-16)
         'OFFICE'          => [ 'first' => '%', 'last' => 'OFFICE' ],         // the Lodge office listing (a System entry)
 	];
 
@@ -240,7 +242,7 @@ class Fsbhoa_DoorKing_Importer {
 			"SELECT id, household_id, property_id, first_name, last_name, cardholder_status
 			 FROM ac_cardholders
 			 WHERE REPLACE( last_name, '''', '' ) LIKE %s{$where}
-			 ORDER BY ( cardholder_status = 'active' ) DESC, id ASC",
+			 ORDER BY ( cardholder_status = 'active' ) DESC, ( resident_type = 'Landlord' ) ASC, id ASC",
 			$like
 		) );
 		return array_values( array_filter( (array) $rows, function ( $row ) use ( $token, $truncated_token ) {
@@ -465,7 +467,7 @@ class Fsbhoa_DoorKing_Importer {
                      "SELECT id, household_id, property_id, first_name, last_name, cardholder_status
                       FROM ac_cardholders
                       WHERE first_name LIKE %s AND last_name LIKE %s
-                      ORDER BY ( cardholder_status = 'active' ) DESC, id ASC
+                      ORDER BY ( cardholder_status = 'active' ) DESC, ( resident_type = 'Landlord' ) ASC, id ASC
                       LIMIT 1",
                      '%' . $alias['first'] . '%',
                      '%' . $alias['last'] . '%'
@@ -480,7 +482,7 @@ class Fsbhoa_DoorKing_Importer {
                     "SELECT id, household_id, property_id, first_name, last_name, cardholder_status
                      FROM ac_cardholders
                      WHERE phone = %s
-                     ORDER BY ( cardholder_status = 'active' ) DESC, id ASC
+                     ORDER BY ( cardholder_status = 'active' ) DESC, ( resident_type = 'Landlord' ) ASC, id ASC
                      LIMIT 1",
                     $full_phone
                 ) );
