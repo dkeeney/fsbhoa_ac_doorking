@@ -27,7 +27,8 @@ class Fsbhoa_DoorKing_Legacy {
     const PAGE_SLUG     = 'fsbhoa_doorking_legacy';
     const REPORT_TTL    = 1800;
 
-    // Why a value RAM holds would not be sent. Only 'missing' is kept by default.
+    // Why a value RAM holds would not be sent. 'missing' and 'archived' are ticked by default.
+    const DEFAULT_REASONS = [ 'missing', 'archived' ];
     const REASONS = [
         'missing'    => 'Not in the database',
         'archived'   => 'Held only by archived or purged cardholders',
@@ -936,11 +937,11 @@ class Fsbhoa_DoorKing_Legacy {
             <fieldset style="margin-left: 20px;">
                 <?php foreach ( [ 'missing', 'archived', 'inactive', 'superseded' ] as $reason ) : ?>
                     <label style="display: block; margin-bottom: 4px;">
-                        <input type="checkbox" name="reasons[]" value="<?php echo esc_attr( $reason ); ?>" <?php checked( 'missing', $reason ); ?>>
+                        <input type="checkbox" name="reasons[]" value="<?php echo esc_attr( $reason ); ?>" <?php checked( in_array( $reason, self::DEFAULT_REASONS, true ) ); ?>>
                         <?php echo esc_html( self::REASONS[ $reason ] ); ?>
                     </label>
                 <?php endforeach; ?>
-                <p class="description">The database's own decisions (archived cardholders, disabled credentials) are left off by default: keeping them would undo those decisions at the gates.</p>
+                <p class="description">Ticked by default: values no one holds, and values held only by archived or purged people (RAM still opens with them, and a current resident may be driving the car: a former owner's tags often stay with the household; each use is reported on Discord). Left off: disabled, inactive or expired credentials (only pedestrian badges can be disabled, and RAM holds none, so this rarely if ever lists anything) and superseded values (the household already sends another one).</p>
             </fieldset>
             <p class="submit" style="margin-bottom: 0;"><button type="submit" class="button button-primary">Check file</button></p>
         </form>
