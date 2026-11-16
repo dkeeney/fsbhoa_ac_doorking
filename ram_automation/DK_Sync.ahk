@@ -65,6 +65,12 @@ global StatusFile     := LiveDir . "\ram_pc_status.txt"
 ; RAM's Live Streaming Disk File. Besides live transactions, RAM writes a status record there
 ; when a Send Data session ends, which is how the import knows the send is finished.
 global StreamFile     := LiveDir . "\stream.txt"
+; RAM's own session log, newest session first (ANSI text), in RAM's data folder. RAM writes each
+; Send Data session's result there ("Account: <name>", the action, "****Successful****" or
+; "****Unsuccessful****") whether or not Live Streaming is on, so it confirms the end of a send
+; too. Optional: RamDataDir in dk_sync.ini, if RAM keeps its data somewhere else.
+global RamDataDir     := Trim(IniRead(IniFile, "DK_Sync", "RamDataDir", "C:\Users\Public\Documents\DoorKing\DoorKing Account Manager"))
+global RamEventsLog   := RamDataDir . "\events.log"
 global SendTimeoutMs  := 1000 * Integer("0" . Trim(IniRead(IniFile, "DK_Sync", "SendTimeoutSeconds", "300")))
 global StatusFileOk   := true     ; so a failing heartbeat write is logged once, not every check
 ; DoorKing32.exe's path, to start RAM: from dk_sync.ini (RamPath), else noted while RAM runs
@@ -385,8 +391,12 @@ RunAutomation() {
     if (GateAccounts.Length > accounts)
         throw Error("dk_sync.ini's GateAccounts names " . GateAccounts.Length . " accounts, but RAM's Send Data list has only " . accounts . ".")
     
-    ; Note where the Live Streaming file ends, so only records RAM writes after OK count
-    streamStart := FileExist(StreamFile) ? FileGetSize(StreamFile) : -1
+    ; Note where the Live Streaming file ends, so only records RAM writes after OK count. A
+    ; missing file (rotated, and no record since) is read from the start once RAM makes it;
+    ; only a missing Live folder means there is no stream to watch. And note the top of RAM's
+    ; session log, so only sessions logged after OK count.
+    streamStart := FileExist(StreamFile) ? FileGetSize(StreamFile) : (DirExist(LiveDir) ? 0 : -1)
+    eventsHead  := SubStr(ReadRamEvents(), 1, 400)   ; its top 400 characters
 
     WriteLog("Initiating transmission to gate controllers.")
     ControlFocus("Button1", "A") ; OK
@@ -423,15 +433,20 @@ RunAutomation() {
     WriteLog("Data is transmitting to gates. Waiting for completion...")
 
     ; RAM prepares for up to a minute or more before it reaches the panel, and the status
-    ; window doesn't show when the session ends. RAM's own record in the Live Streaming file
-    ; does: one per account sent, when its session ends.
-    if (streamStart >= 0) {
-        WaitForSendRecords(streamStart, GateAccounts.Length ? GateAccounts.Length : accounts)
+    ; window doesn't show when the session ends (it looked finished 20-40 seconds before the
+    ; panel beeped, 2026-11-16). RAM's own records do: one per account sent, when its session
+    ; ends, in the Live Streaming file and in its session log (events.log). Either counts.
+    if (streamStart >= 0 || eventsHead != "") {
+        if (streamStart < 0)
+            WriteLog("No Live Streaming folder " . LiveDir . "; waiting for RAM's session log only.")
+        if (eventsHead = "")
+            WriteLog("RAM's session log " . RamEventsLog . " can't be read; waiting for the Live Streaming file only.")
+        WaitForSendRecords(streamStart, GateAccounts.Length ? GateAccounts.Length : accounts, eventsHead)
         statusDlg := ""
         if (hwnd := WinExist("ahk_class #32770 ahk_exe DoorKing32.exe", "Cancel Session"))
             statusDlg := "ahk_id " . hwnd
     } else {
-        WriteLog("No Live Streaming file at " . StreamFile . ", so the end of the send can't be confirmed; watching RAM's status window instead.")
+        WriteLog("No Live Streaming folder " . LiveDir . " and no RAM session log " . RamEventsLog . ", so the end of the send can't be confirmed; watching RAM's status window instead (it may say done too early).")
         statusDlg := WaitForSessionButton()
     }
     if (statusDlg = "") {
@@ -474,14 +489,20 @@ RunAutomation() {
     WinMinimize(RamWinTitle)
 }
 
-; Waits until RAM has written, after the given byte of the Live Streaming file, a record
-; that a Send Data session ended for `accounts` accounts: "Download Data" (sent) or "Database
-; is Up To Date" (nothing to send). With GateAccounts set, the records must be from those
-; accounts; a record from another account is logged and doesn't count. "Failed To Connect"
-; for a counted account is an error, and so is no record within SendTimeoutSeconds. The file
-; is in RAW Text: a status record has its account name in columns 1-23, its type (Network
-; or RS232) at columns 45-57 and its message from column 66.
-WaitForSendRecords(offset, accounts) {
+; Waits until RAM reports that a Send Data session ended for `accounts` accounts, from either
+; of two sources, whichever comes first:
+; - the Live Streaming file (offset: the byte to read from; -1: no stream to watch): a record
+;   "Download Data" (sent) or "Database is Up To Date" (nothing to send), or "Failed To
+;   Connect" (an error). The file is in RAW Text: a status record has its account name in
+;   columns 1-23, its type (Network or RS232) at columns 45-57 and its message from column 66.
+;   It may not exist yet (rotated, no record since): it's read from the start once RAM makes it.
+; - RAM's session log (eventsHead: the start of events.log before the send; "": not used): a
+;   session logged above that point, with "Sending Data", "Account: <name>" and
+;   "****Successful****" (sent) or "****Unsuccessful****" (an error). RAM writes it whether or
+;   not Live Streaming is on (on 2026-11-16 it was the only record of a send).
+; With GateAccounts set, the reports must be from those accounts; a report from another account
+; is logged and doesn't count. No report within SendTimeoutSeconds is an error.
+WaitForSendRecords(offset, accounts, eventsHead := "") {
     done := Map()       ; Map() keys ignore case only with CaseSense off
     done.CaseSense := false
     others := ""        ; accounts that reported but aren't in GateAccounts
@@ -493,52 +514,95 @@ WaitForSendRecords(offset, accounts) {
             for name in GateAccounts
                 if !done.Has(SubStr(name, 1, 23))
                     missing .= (missing = "" ? "" : ", ") . name
-            throw Error("No word from RAM that the send finished (no Download Data or Database is Up To Date record in " . StreamFile . " within " . (SendTimeoutMs // 1000) . " seconds"
+            throw Error("No word from RAM that the send finished (no Download Data or Database is Up To Date record in " . StreamFile
+                . " and no finished session in " . RamEventsLog . " within " . (SendTimeoutMs // 1000) . " seconds"
                 . (missing != "" ? " for " . missing : "") . ")."
                 . (others != "" ? " RAM reported for " . others . " instead: check GateAccounts in dk_sync.ini." : ""))
         }
         Sleep(1000)
-        try {
-            f := FileOpen(StreamFile, "r")
-            if (f.Length < offset)
-                offset := 0   ; the file was rotated: read the new one from the start
-            f.Pos := offset
-            text := f.Read()
-            offset := f.Pos
-            f.Close()
-        } catch {
-            continue   ; the NAS may be busy; try again
+
+        ; Reports in hand this round: [account, message, failed]
+        reports := []
+
+        ; 1. The Live Streaming file
+        text := ""
+        if (offset >= 0 && FileExist(StreamFile)) {
+            try {
+                f := FileOpen(StreamFile, "r")
+                if (f.Length < offset)
+                    offset := 0   ; the file was rotated: read the new one from the start
+                f.Pos := offset
+                text := f.Read()
+                offset := f.Pos
+                f.Close()
+            } catch {
+                text := ""   ; the NAS may be busy; try again
+            }
         }
-        if (text = "")
-            continue   ; nothing new yet
-        lines := StrSplit(partial . text, "`n")
-        partial := lines.Pop()   ; a record still being written
-        for line in lines {
-            line := RTrim(line, "`r")
-            type := Trim(SubStr(line, 45, 13))
-            if (type != "RS232" && type != "Network")
-                continue
-            account := Trim(SubStr(line, 1, 23))
-            message := Trim(SubStr(line, 66))
-            if !RegExMatch(message, "i)^(Failed To Connect|Download Data|Database is Up To Date)")
+        if (text != "") {
+            lines := StrSplit(partial . text, "`n")
+            partial := lines.Pop()   ; a record still being written
+            for line in lines {
+                line := RTrim(line, "`r")
+                type := Trim(SubStr(line, 45, 13))
+                if (type != "RS232" && type != "Network")
+                    continue
+                message := Trim(SubStr(line, 66))
+                if RegExMatch(message, "i)^(Failed To Connect|Download Data|Database is Up To Date)")
+                    reports.Push([Trim(SubStr(line, 1, 23)), message, RegExMatch(message, "i)^Failed To Connect") > 0])
+            }
+        }
+
+        ; 2. RAM's session log: the sessions logged above where it began before the send
+        if (eventsHead != "") {
+            cur := ReadRamEvents()
+            at := (cur = "") ? 0 : InStr(cur, eventsHead, true)
+            if (at > 1) {
+                for block in StrSplit(SubStr(cur, 1, at - 1), "Session ID is") {
+                    if !InStr(block, "Sending Data")
+                        continue
+                    if !RegExMatch(block, "m)^Account: (.+?)\s*$", &acct)
+                        continue   ; the session hasn't ended yet
+                    if !RegExMatch(block, "m)^\*{4}(Successful|Unsuccessful)\*{4}\s*$", &res)
+                        continue
+                    action := RegExMatch(block, "m)^\s+- (.+?)\s*$", &act) ? act[1] . ": " : ""   ; e.g. Send All Data, Database is up to date
+                    reports.Push([SubStr(Trim(acct[1]), 1, 23), action . res[1] . " (RAM's session log)", res[1] = "Unsuccessful"])
+                }
+            }
+        }
+
+        for r in reports {
+            account := r[1], message := r[2]
+            if done.Has(account)
                 continue
             if (GateAccounts.Length && !IsGateAccount(account)) {
-                WriteLog("RAM reports for " . account . ", which isn't in GateAccounts: " . message)
-                if !InStr(", " . others . ", ", ", " . account . ", ")
+                if !InStr(", " . others . ", ", ", " . account . ", ") {
+                    WriteLog("RAM reports for " . account . ", which isn't in GateAccounts: " . message)
                     others .= (others = "" ? "" : ", ") . account
+                }
                 continue
             }
-            if RegExMatch(message, "i)^Failed To Connect") {
-                WriteLog("RAM reports for " . account . ": " . message)
-                throw Error("RAM could not reach the panel for " . account . ": " . message)
-            }
-            if RegExMatch(message, "i)^(Download Data|Database is Up To Date)") {
-                WriteLog("RAM reports for " . account . ": " . message)
-                done[account] := message
-                if (done.Count >= accounts)
-                    return
-            }
+            WriteLog("RAM reports for " . account . ": " . message)
+            if r[3]
+                throw Error("RAM could not send to the panel for " . account . ": " . message)
+            done[account] := message
+            if (done.Count >= accounts)
+                return
         }
+    }
+}
+
+; RAM's session log (events.log, ANSI text), or "" if it can't be read.
+ReadRamEvents() {
+    try {
+        if !FileExist(RamEventsLog)
+            return ""
+        f := FileOpen(RamEventsLog, "r", "CP0")
+        text := f.Read()
+        f.Close()
+        return text
+    } catch {
+        return ""
     }
 }
 
