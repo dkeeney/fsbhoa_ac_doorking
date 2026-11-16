@@ -35,6 +35,7 @@ class Fsbhoa_DoorKing_Legacy {
         'inactive'   => 'Held by a current cardholder, but the credential is disabled, inactive or expired',
         'superseded' => 'Held by a current cardholder with a valid credential, but not sent (for example, the household has another directory code)',
         'dir'        => 'A directory code not in the database, a household\'s extra one (one per household), or on a vendor row (vendors have none); never kept (except on unnamed rows)',
+        'ram_dir'    => 'A directory code on a row this system sends without one: RAM gives every row a directory code (the lowest free one) when it imports, so after a push these are RAM\'s own; nothing is lost, never kept',
     ];
 
     const KIND_LABELS = [
@@ -425,7 +426,13 @@ class Fsbhoa_DoorKing_Legacy {
             }
         }
         $our_values = [];
+        // Names of the rows this system sends without a directory code: RAM numbers those itself
+        // on import (workbench round trip, 2026-11-16: 154 such rows got codes 2-155)
+        $our_no_dir = [];
         foreach ( $ours['rows'] as $row ) {
+            if ( ! in_array( 'dir', array_column( $row['values'], 'kind' ), true ) ) {
+                $our_no_dir[ strtoupper( trim( $row['name'] ) ) ] = true;
+            }
             foreach ( $row['values'] as $v ) {
                 if ( ! isset( $our_values[ $v['key'] ] ) ) {
                     $our_values[ $v['key'] ] = $v + [ 'name' => $row['name'] ];
@@ -446,6 +453,10 @@ class Fsbhoa_DoorKing_Legacy {
             // never kept. An unnamed row's directory code is kept with the rest of the row.
             if ( ! $v['unnamed'] && 'dir' === $v['kind'] && ( in_array( $reason, [ 'missing', 'superseded' ], true ) || 'Y' === $v['vendor'] ) ) {
                 $reason = 'dir';
+            }
+            // A directory code RAM gave a row we send without one (RAM requires one on every row)
+            if ( ! $v['unnamed'] && 'dir' === $v['kind'] && 'missing' === self::classify( $holders ) && isset( $our_no_dir[ strtoupper( trim( $v['name'] ) ) ] ) ) {
+                $reason = 'ram_dir';
             }
             $lost[]  = $v + [
                 'reason'  => $reason,
@@ -953,7 +964,7 @@ class Fsbhoa_DoorKing_Legacy {
         foreach ( $r['lost'] as $v ) {
             $by_reason[ $v['reason'] ][] = $v;
         }
-        $real_lost = count( $r['lost'] ) - count( $by_reason['dir'] ?? [] );
+        $real_lost = count( $r['lost'] ) - count( $by_reason['dir'] ?? [] ) - count( $by_reason['ram_dir'] ?? [] );
         $ok        = 0 === $real_lost && empty( $r['added'] ) && empty( $r['other_only'] );
         ?>
         <div style="background: #fff; border: 1px solid #ccc; border-left: 4px solid <?php echo $ok ? '#00a32a' : ( $real_lost ? '#d63638' : '#dba617' ); ?>; padding: 12px 20px; margin: 16px 0; max-width: 1100px;">
@@ -978,8 +989,8 @@ class Fsbhoa_DoorKing_Legacy {
                     continue;
                 }
                 ?>
-                <details <?php echo ( 'dir' === $reason ) ? '' : 'open'; ?> style="margin-bottom: 10px;">
-                    <summary><strong>Not sent: <?php echo esc_html( $label ); ?> (<?php echo count( $by_reason[ $reason ] ); ?>)</strong></summary>
+                <details <?php echo in_array( $reason, [ 'dir', 'ram_dir' ], true ) ? '' : 'open'; ?> style="margin-bottom: 10px;">
+                    <summary><strong><?php echo ( 'ram_dir' === $reason ) ? 'Assigned by RAM' : 'Not sent'; ?>: <?php echo esc_html( $label ); ?> (<?php echo count( $by_reason[ $reason ] ); ?>)</strong></summary>
                     <table class="widefat striped" style="margin-top: 6px;">
                         <thead><tr><th>RAM name</th><th>Kind</th><th>Value</th><th>RAM note</th><th>In the database</th></tr></thead>
                         <tbody>
