@@ -31,7 +31,9 @@ class Fsbhoa_DoorKing_Importer {
 		'KLINK, STEPHAN'  => [ 'first' => 'Stephen', 'last' => 'Klink' ],
 		'KO, YOUNG AE'    => [ 'first' => 'Young Ae', 'last' => 'Ko' ],
 		'KREBS-CODDINGTO' => [ 'first' => 'Ginny', 'last' => 'Krebs' ],
-		'L DIAZ'          => [ 'first' => 'Laura Rocha', 'last' => 'Diaz' ],
+		'L DIAZ'          => [ 'first' => 'Laura', 'last' => 'Rocha Diaz' ],
+		'BONACORSI&HOFER' => [ 'first' => 'Linda', 'last' => 'Hofer' ],
+		'MARSHALL, G & R' => [ 'first' => 'Gwenetta', 'last' => 'Marshall' ],
 		'MARTINEZ,PHYLIS' => [ 'first' => 'Phyllis', 'last' => 'Martinez' ],
 		'OBRIEN, TERRY'   => [ 'first' => 'Terry', 'last' => "O'Brien" ],
 		'RAMIREZ, G'      => [ 'first' => 'Guadalupe', 'last' => 'Ramirez' ],
@@ -59,6 +61,12 @@ class Fsbhoa_DoorKing_Importer {
         'ORTIZ.CYNTHIA'   => [ 'first' => 'Cynthia', 'last' => 'Ortiz' ],
         'JOSH MACIAS'     => [ 'first' => 'Josh', 'last' => 'Macias' ],
         'PIRRELO LAURA'   => [ 'first' => 'Laura', 'last' => 'Pirrello' ],
+        'MALIANO, C & J'  => [ 'first' => '%', 'last' => 'Malinao' ],
+        'MI, RYN'         => [ 'first' => 'Mi', 'last' => 'Ryu' ],
+        'RANDALL, CYNTHI' => [ 'first' => 'Cynthia', 'last' => 'Randell' ],  // lives with Bill Peloquin
+        'SULLIVAN, J & M' => [ 'first' => 'Mary', 'last' => 'Sullivan' ],    // lives with Russell V Judd
+        'YVETTE, J'       => [ 'first' => 'Pierre', 'last' => 'Noblins' ],
+        'OFFICE'          => [ 'first' => '%', 'last' => 'OFFICE' ],         // the Lodge office listing (a System entry)
 	];
 
 	public function __construct() {
@@ -155,24 +163,101 @@ class Fsbhoa_DoorKing_Importer {
     }
 
 
-	private function fuzzy_name_match( $surname_tokens, $initials, $full_resident_string = '' ) {
+	// RAM's resident name holds 15 characters: a longer name is cut off in its last word
+	const RAM_NAME_LENGTH = 15;
+
+	/** The words of a name, upper case, without punctuation ("O'Brien" is OBRIEN). */
+	private static function name_words( $name ) {
+		$name = strtoupper( str_replace( [ "'", '`' ], '', (string) $name ) );
+		return array_values( array_filter( preg_split( '/[^A-Z]+/', $name ) ) );
+	}
+
+	/**
+	 * Whether a word of a RAM name is a word of a last name. A word must be whole, never just the
+	 * first letters ("MI" is not Mitchell), except:
+	 *  - a word of 4 or more letters missing at most 2 at the end ("ELLIOT" is Elliott);
+	 *  - the last word of a RAM name cut off at RAM_NAME_LENGTH ("HERNANDEZ&ROTHE" is Rotherham).
+	 * A hyphenated RAM word ("CASTEEL-LINO") needs all its parts, in order; one written together
+	 * matches a last name of several words ("VANHOUTEN"). $loose also takes a
+	 * spelling one letter off (two for 6 or more letters): "RODRIGUEZ" is Rodriquez.
+	 */
+	private static function token_in_last_name( $token, $last_name, $truncated_token = '', $loose = false ) {
+		$parts = self::name_words( $token );
+		if ( ! $parts || strlen( implode( '', $parts ) ) < 2 ) {
+			return false;
+		}
+		$cut_word = '' !== $truncated_token ? implode( '', self::name_words( $truncated_token ) ) : '';
+		$words    = self::name_words( $last_name );
+		// "VANHOUTEN" is Van Houten
+		if ( count( $words ) > 1 && implode( '', $parts ) === implode( '', $words ) ) {
+			return true;
+		}
+		for ( $start = 0; $start + count( $parts ) <= count( $words ); $start++ ) {
+			$all = true;
+			foreach ( $parts as $k => $part ) {
+				if ( ! self::word_agrees( $part, $words[ $start + $k ], $part === $cut_word, $loose ) ) {
+					$all = false;
+					break;
+				}
+			}
+			if ( $all ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static function word_agrees( $part, $word, $may_be_cut, $loose ) {
+		if ( $part === $word ) {
+			return true;
+		}
+		$len = strlen( $part );
+		if ( 0 === strpos( $word, $part ) && ( ( $len >= 4 && strlen( $word ) - $len <= 2 ) || ( $may_be_cut && $len >= 3 ) ) ) {
+			return true;
+		}
+		return $loose && $len >= 4 && levenshtein( $part, $word ) <= ( $len >= 6 ? 2 : 1 );
+	}
+
+	/** The last word of a RAM name cut off at RAM_NAME_LENGTH, or '' when it is whole. */
+	private static function truncated_token( $resident_name ) {
+		$resident_name = trim( (string) $resident_name );
+		if ( strlen( $resident_name ) < self::RAM_NAME_LENGTH ) {
+			return '';
+		}
+		$words = self::name_words( $resident_name );
+		return $words ? end( $words ) : '';
+	}
+
+	/**
+	 * Cardholders whose last name holds a word of a RAM name (token_in_last_name), current ones
+	 * first, so a current person wins over a former record.
+	 */
+	private function cardholders_by_last_name_word( $token, $truncated_token, $status = '' ) {
 		global $wpdb;
-		$candidates = [];
+		$like  = '%' . implode( '%', array_map( [ $wpdb, 'esc_like' ], self::name_words( $token ) ) ) . '%';
+		$where = 'archived' === $status ? " AND cardholder_status = 'archived'" : '';
+		$rows  = $wpdb->get_results( $wpdb->prepare(
+			"SELECT id, household_id, property_id, first_name, last_name, cardholder_status
+			 FROM ac_cardholders
+			 WHERE REPLACE( last_name, '''', '' ) LIKE %s{$where}
+			 ORDER BY ( cardholder_status = 'active' ) DESC, id ASC",
+			$like
+		) );
+		return array_values( array_filter( (array) $rows, function ( $row ) use ( $token, $truncated_token ) {
+			return self::token_in_last_name( $token, $row->last_name, $truncated_token );
+		} ) );
+	}
+
+	private function fuzzy_name_match( $surname_tokens, $initials, $full_resident_string = '' ) {
+		$candidates      = [];
+		$truncated_token = self::truncated_token( $full_resident_string );
 
 		foreach ( $surname_tokens as $token ) {
 			$token = trim( $token );
 			if ( strlen( $token ) < 2 || strtoupper( $token ) === 'AND' ) {
 				continue;
 			}
-
-            // Current cardholders first, so a current person wins over a former record
-            $query = "
-                SELECT id, household_id, property_id, first_name, last_name, cardholder_status
-                FROM ac_cardholders
-                WHERE last_name LIKE %s
-                ORDER BY ( cardholder_status = 'active' ) DESC, id ASC
-            ";
-			$token_candidates = $wpdb->get_results( $wpdb->prepare( $query, $token . '%' ) );
+			$token_candidates = $this->cardholders_by_last_name_word( $token, $truncated_token );
 			if ( ! empty( $token_candidates ) ) {
 				$candidates = array_merge( $candidates, $token_candidates );
 			}
@@ -197,9 +282,8 @@ class Fsbhoa_DoorKing_Importer {
 			foreach ( $households as $hh_id => $members ) {
 				$matched_tokens_found = 0;
 				foreach ( $surname_tokens as $token ) {
-					$token = strtolower( trim( $token ) );
 					foreach ( $members as $member ) {
-						if ( strpos( strtolower( $member->last_name ), $token ) !== false ) {
+						if ( self::token_in_last_name( $token, $member->last_name, $truncated_token ) ) {
 							$matched_tokens_found++;
 							break;
 						}
@@ -405,6 +489,30 @@ class Fsbhoa_DoorKing_Importer {
                 }
             }
 
+            // A phone match whose last name has no word of the RAM name: RAM's phone can be stale
+            // or somebody else's (GRIMES, TRACIE carried the Kimbers' phone). A name match on a
+            // different cardholder wins; with none, the phone match stays, flagged for review.
+            if ( $cardholder && 0 === strpos( $match_method, 'Phone Match' ) ) {
+                $truncated_token = self::truncated_token( $resident_name );
+                $name_agrees     = false;
+                foreach ( $surname_tokens as $token ) {
+                    if ( self::token_in_last_name( $token, $cardholder->last_name, $truncated_token, true ) ) {
+                        $name_agrees = true;
+                        break;
+                    }
+                }
+                if ( ! $name_agrees ) {
+                    $by_name = $this->fuzzy_name_match( $surname_tokens, $initials, $resident_name );
+                    if ( $by_name && (int) $by_name->id !== (int) $cardholder->id ) {
+                        $this->dry_run_log[] = "[PHONE OVERRULED] '{$resident_name}' phone {$full_phone} is {$cardholder->first_name} {$cardholder->last_name} (ID: {$cardholder->id}); the name matches {$by_name->first_name} {$by_name->last_name} (ID: {$by_name->id}), who gets this row.";
+                        $cardholder   = $by_name;
+                        $match_method = "Fuzzy Name Match (phone {$full_phone} overruled)";
+                    } else {
+                        $this->dry_run_log[] = "[PHONE ONLY] '{$resident_name}' matched {$cardholder->first_name} {$cardholder->last_name} (ID: {$cardholder->id}) by phone {$full_phone} alone; the names differ. Check it.";
+                    }
+                }
+            }
+
 			// 3. Fuzzy Name Match
 			if ( ! $cardholder ) {
 				$cardholder = $this->fuzzy_name_match( $surname_tokens, $initials, $resident_name );
@@ -425,10 +533,8 @@ class Fsbhoa_DoorKing_Importer {
 				}
 
 				if ( ! $archived_match && ! empty( $surname_tokens ) ) {
-					$archived_match = $wpdb->get_row( $wpdb->prepare(
-						"SELECT id, household_id, property_id, first_name, last_name FROM ac_cardholders WHERE last_name LIKE %s AND cardholder_status = 'archived' LIMIT 1",
-						$surname_tokens[0] . '%'
-					) );
+					$archived       = $this->cardholders_by_last_name_word( $surname_tokens[0], self::truncated_token( $resident_name ), 'archived' );
+					$archived_match = $archived ? $archived[0] : null;
 				}
 
 				// Only a current survivor with the same last name: a new owner of the property
