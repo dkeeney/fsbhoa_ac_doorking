@@ -302,8 +302,9 @@ class Fsbhoa_DoorKing_Export {
                         if ( '1' === (string) $val || 'Y' === strtoupper( (string) $val ) ) $opt_in = true;
                     } elseif ( in_array( $type, [ 'DK_WINDSHIELD', 'RFID', 'WIEGAND_26' ], true ) ) {
                         $clean_dev = str_pad( substr( $val, -5 ), 5, '0', STR_PAD_LEFT );
-                        // A device starting with 0 is a fob, which no reader at the gates reads
-                        if ( '0' !== $clean_dev[0] && ! isset( $this->global_devices[ $clean_dev ] ) ) {
+                        // Every tag entered in V2 is sent, fobs (devices starting with 0) too (2026-11-19, the user);
+                        // only the importers skip fobs
+                        if ( ! isset( $this->global_devices[ $clean_dev ] ) ) {
                             $this->global_devices[ $clean_dev ] = true;
                             $device_list[] = $clean_dev;
                         }
@@ -397,8 +398,9 @@ class Fsbhoa_DoorKing_Export {
                         }
                     } elseif ( in_array( $type, [ 'DK_WINDSHIELD', 'RFID', 'WIEGAND_26' ], true ) ) {
                         $clean_dev = str_pad( substr( $val, -5 ), 5, '0', STR_PAD_LEFT );
-                        // A device starting with 0 is a fob, which no reader at the gates reads
-                        if ( '0' !== $clean_dev[0] && ! isset( $this->global_devices[ $clean_dev ] ) ) {
+                        // Every tag entered in V2 is sent, fobs (devices starting with 0) too (2026-11-19, the user);
+                        // only the importers skip fobs
+                        if ( ! isset( $this->global_devices[ $clean_dev ] ) ) {
                             $this->global_devices[ $clean_dev ] = true;
                             $device_list[] = $clean_dev;
                         }
@@ -478,7 +480,7 @@ class Fsbhoa_DoorKing_Export {
                     $this->global_pins[ $val ] = true;
                     $ent_val = $val;
                 } else {
-                    // A device starting with 0 is a fob, which no reader at the gates reads
+                    // Legacy entries never send a fob (RAM's old fobs are dropped); fobs entered in V2 are sent
                     if ( '0' === $val[0] || isset( $this->global_devices[ $val ] ) ) {
                         continue;
                     }
